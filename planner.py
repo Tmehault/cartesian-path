@@ -6,12 +6,11 @@ import rospy
 import readline # autocompletion
 from progress.bar import FillingCirclesBar #progress bar
 from progress.bar import ChargingBar
-import multiprocessing #threading execution of the plan
+from multiprocessing import Process
+import signal
 import moveit_commander
 import geometry_msgs.msg
-from math import pi
-from math import sqrt
-from math import pow
+from math import pi, sqrt, pow
 from std_msgs.msg import String
 #from niryo_one_msgs.msg import RobotState
 from moveit_msgs.msg import  RobotState as RbState #changing name to avoid conflict with newly made RobotState msg by Niryo
@@ -46,7 +45,16 @@ def completer(text, state):
         return options[state]
     except IndexError:
         return None
-
+        
+def time_bar(duration):
+ t_in=time.time()
+ t_actual=t_in
+ state=ChargingBar('Progress',max=duration)
+ while(int(t_actual-t_in)<duration):
+  time.sleep(1)
+  t_actual=time.time()
+  state.next()
+ state.finish()
 
 class PlannerInterface(object):
   
@@ -56,10 +64,6 @@ class PlannerInterface(object):
     moveit_commander.roscpp_initialize(sys.argv)
     rospy.init_node('PlannerInterface')
 
-		# Instantiate a `RobotCommander`_ object. Provides information such as the robot's kinematic model and the robot's current joint states
-    #robot = moveit_commander.RobotCommander()
-		# Instantiate a `PlanningSceneInterface`_ object.  This provides a remote interface for getting, setting, and updating the robot's internal understanding of the world
-    #scene = moveit_commander.PlanningSceneInterface()
 		# Instantiate a `MoveGroupCommander`_ object.  This object is an interface to a planning group (group of joints).
     group_name = "arm"
     move_group = moveit_commander.MoveGroupCommander(group_name)
@@ -166,14 +170,8 @@ class PlannerInterface(object):
         
         
         # --- Getting waypoints
-        
         waypoints = waypoints
         
-		# We want the Cartesian path to be interpolated at a resolution of 1 cm
-		# which is why we will specify 0.01 as the eef_step in Cartesian
-		# translation.  We will disable the jump threshold by setting it to 0.0,
-		# ignoring the check for infeasible jumps in joint space, which is sufficient
-		# for this tutorial.
         print(cblue+"\n\t === Compute a trajectory ===\n"+cend)
         
         #-- Parameters
@@ -183,6 +181,7 @@ class PlannerInterface(object):
         eef_step=1.0 #eef_step at 1.0 considering gcode is already an interpolation
         velocity=0.03
         
+        #-- Computation
         print "Max tries authorized : ", max_tries, "\neef step : ", eef_step
         t_in=time.time()
         while(fraction<1.0 and tries<10):
@@ -213,19 +212,16 @@ class PlannerInterface(object):
     t_out=time.time()
     print "Finished at : ", time.asctime(time.localtime(t_out))
     print "Elapsed : ", t_out-t_in
+  
+  def tracker(self,duration): #--Not working: arm pose doesnt update
+    for i in range(0,duration):
+     a=n.get_arm_pose()
+     print a
+     print "\t---------------------------- ",i
+     time.sleep(1)
     
 
-def time_bar(duration):
- t_in=time.time()
- t_actual=t_in
- state=ChargingBar('Progress',max=duration)
- while(int(t_actual-t_in)<duration):
-  time.sleep(1)
-  t_actual=time.time()
-  state.next()
- state.finish()
-  
-  
+    
    
 #------------------------------------------------------------
 #  --------   MAIN  --------------------
@@ -241,13 +237,11 @@ if(not(test_mode) and way!=0):# Classic mode -----
  cartesian_plan, end_joints = Instance.plan_cartesian_path(way,n.get_joints())
  a=raw_input("Execute trajectory ? (yes/no) ")
  if(a=='yes'):
-  job=multiprocessing.Process(target=time_bar, args=(cartesian_plan.joint_trajectory.points[-1].time_from_start.secs,))
+  job=Process(target=time_bar, args=(cartesian_plan.joint_trajectory.points[-1].time_from_start.secs,))
   job.start()
   Instance.execute_plan(cartesian_plan)
-  job.join()
-
+  os.kill(int(job.pid), signal.SIGKILL) #kill process by the hard method (terminate and join doesnt work)
   
-# do something to prevent programm ending
 
 
 print(cgreen+"\n --- Program ended ---\n"+cend)
