@@ -11,6 +11,7 @@ from math import pow
 from std_msgs.msg import String
 #from niryo_one_msgs.msg import RobotState
 from moveit_msgs.msg import  RobotState as RbState #changing name to avoid conflict with newly made RobotState msg by Niryo
+from moveit_msgs.msg import RobotTrajectory
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Header
 from niryo_one_commander.position.position import Position
@@ -22,6 +23,13 @@ import time
 n = NiryoOne()
 
 test_mode=0 #classic mode 0, test mode for benchmarking 1
+
+#colors
+cred='\033[91m'
+cend='\033[0m'
+cgreen='\033[92m'
+cyellow='\033[93m'
+cblue='\033[94m'
 
 
 class MoveGroupPythonInterfaceTutorial(object):
@@ -72,7 +80,7 @@ class MoveGroupPythonInterfaceTutorial(object):
         waypoints=[]
         waypoints.append(copy.deepcopy(wpose))#store start state to reduce jerk at the beginning
         # --- Adding points to follow in path
-        print "\n\t === Acquire a trajectory === \n"
+        print(cgreen+"\n\t === Acquire a trajectory === \n"+cend)
         dir=os.getcwd()+"/Trajectories"
         print "Current directory: ", dir
         print "Files found: \n", os.listdir(dir)
@@ -88,7 +96,7 @@ class MoveGroupPythonInterfaceTutorial(object):
          nbr += 1
          line=way.readline()
          if(len(line.split(' '))!=7 and line!=""):
-          print "Error line ", nbr," does not contain 3 positions + 4 quaternions values :"
+          print(cred+"Error line "+str(nbr)+" does not contain 3 positions + 4 quaternions values :"+cend)
           print line
           return 0
         way.seek(0)
@@ -152,14 +160,14 @@ class MoveGroupPythonInterfaceTutorial(object):
 		# translation.  We will disable the jump threshold by setting it to 0.0,
 		# ignoring the check for infeasible jumps in joint space, which is sufficient
 		# for this tutorial.
-        print "\n\t === Compute a trajectory ===\n"
+        print(cgreen+"\n\t === Compute a trajectory ===\n"+cend)
         
         #-- Parameters
         fraction=0.0
         tries=0
         max_tries=10
         eef_step=1.0 #eef_step at 1.0 considering gcode is already an interpolation
-        velocity=0.03
+        velocity=0.05
         
         print "Max tries authorized : ", max_tries, "eef step : ", eef_step
         t_in=time.time()
@@ -167,7 +175,7 @@ class MoveGroupPythonInterfaceTutorial(object):
          (plan, fraction) = move_group.compute_cartesian_path(waypoints,eef_step, 0.0) 
 										      # waypoints to follow# eef_step in meters# jump_threshold
          tries+=1
-         print("\t---try:"+str(tries)+"\t---completed:"+str(fraction*100)+"%")#printing iterations
+         print(cyellow+"\t---try:"+str(tries)+"\t---completed:"+str(fraction*100)+"%"+cend)#printing iterations
         t_out=time.time()
         c_time=t_out-t_in
         print("==>  tries: "+str(tries)+" complete: "+str(fraction*100)+"%  in: "+str(c_time)+" sec")#process results
@@ -175,7 +183,7 @@ class MoveGroupPythonInterfaceTutorial(object):
         print("Retiming trajectory at "+str(velocity*100)+"% speed..")
         plan2=move_group.retime_trajectory(initial_state, plan, velocity) #ref_state_in, plan, velocity scale
         print("Done")
-
+        
         return plan2 , fraction, c_time
 
   def execute_plan(self, plan): #This function is used to allow execution of the trajectory by Niryo arm
@@ -267,10 +275,10 @@ if(test_mode==1 and len(way)==1):# Benchmarking mode -----------
 # ---------------------------------------------------------------------------------------------------------------------------------
 if(not(test_mode) and way!=0):# Classic mode -----
  cartesian_plan, fraction,c_time = Instance.plan_cartesian_path(way)
- print("Execute trajectory ? (yes/no)")
+ print(cblue+"Execute trajectory ? (yes/no)"+cend)
  a=raw_input()
  if(a=='yes'):
   Instance.execute_plan(cartesian_plan)
 
 
-print("\n --- Program ended ---\n")
+print(cgreen+"\n --- Program ended ---\n"+cend)
