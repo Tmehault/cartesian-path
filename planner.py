@@ -12,7 +12,6 @@ import moveit_commander
 import geometry_msgs.msg
 from math import pi, sqrt, pow
 from std_msgs.msg import String
-#from niryo_one_msgs.msg import RobotState
 from moveit_msgs.msg import  RobotState as RbState #changing name to avoid conflict with newly made RobotState msg by Niryo
 from moveit_msgs.msg import RobotTrajectory
 from sensor_msgs.msg import JointState
@@ -93,6 +92,7 @@ class PlannerInterface(object):
         
         waypoints=[]
         waypoints.append(copy.deepcopy(wpose))#store current state to reduce jerk at the beginning
+        
         # --- Adding points to follow in path
         print(cblue+"\n\t === Acquire a trajectory === \n"+cend)
         print "Current directory: ", dir
@@ -100,7 +100,7 @@ class PlannerInterface(object):
         print '\n'.join(files)
         readline.set_completer(completer)#active autocompletion on filenames
         readline.parse_and_bind("tab: complete")
-        
+
         filename=raw_input("\nGetting path from file: ")
         way=open("Trajectories/"+filename,'r')
         os.system('clear')
@@ -108,27 +108,27 @@ class PlannerInterface(object):
               
         line=way.readline()
         nbr = 1  
-        #-- counting lines and checking errors
         
+        #-- counting lines and looking for errors
         while line:
          nbr += 1
          line=way.readline()
          if(len(line.split(' '))!=8 and line!=""):
-          print(cred+"Error line "+str(nbr)+" does not contain 3 positions + 4 quaternions values :"+cend)
+          print(cred+"Error line "+str(nbr)+" does not contain 3 positions + 4 quaternions values + 1 extrusion value:"+cend)
           print line
           return 0
         way.seek(0)
         i=0
         print "lines:",nbr
         
-        extru=[]
-        #-- calculating travelling distance
-        traveling_distance=0
-        wpose.position.x=0 #reset pose
+        extru=[0,0] #initialized with 2 zeros to prevent extrusion between start state and beginning of the real trajectory
+        
+        traveling_distance=0 #to calculate travelling distance
+        wpose.position.x=0  #reset pose
         wpose.position.y=0
         wpose.position.z=0
+        bar=FillingCirclesBar('Processing waypoints', max=nbr-1)
         
-        bar=FillingCirclesBar('Processing waypoints', max=nbr)
         while(i<=nbr-2):
          i+=1
          bar.next()
@@ -148,8 +148,11 @@ class PlannerInterface(object):
         #-- Outing trajectory
         wpose.position.z+=0.1
         waypoints.append(copy.deepcopy(wpose))
+        extru.append(0) #to stop extrusion at the end
+        
         way.close()
         bar.finish()
+        
         print("Trajectory points found: "+str(len(waypoints)))
         print("Traveling distance: "+str(traveling_distance)+" meters")
         return waypoints, extru
@@ -158,6 +161,7 @@ class PlannerInterface(object):
   def plan_cartesian_path(self, waypoints, start_joints): #This function is used to plan the path (calculating accelerations,velocities,positions etc..)
 
         move_group = self.move_group
+        print(cblue+"\n\t === Compute a trajectory ===\n"+cend)
         
         # --- Saving start state
         tab_joints=[start_joints[0], start_joints[1],start_joints[2],start_joints[3],start_joints[4],start_joints[5]]
@@ -174,18 +178,16 @@ class PlannerInterface(object):
         
         # --- Getting waypoints
         waypoints = waypoints
-        
-        print(cblue+"\n\t === Compute a trajectory ===\n"+cend)
-        
+
         #-- Parameters
         fraction=0.0
         tries=0
         max_tries=10
         eef_step=1.0 #eef_step at 1.0 considering gcode is already an interpolation
         velocity=0.03
+        print "Max tries authorized : ", max_tries, "\neef step : ", eef_step
         
         #-- Computation
-        print "Max tries authorized : ", max_tries, "\neef step : ", eef_step
         t_in=time.time()
         while(fraction<1.0 and tries<10):
          (plan, fraction) = move_group.compute_cartesian_path(waypoints,eef_step, 0.0) 
@@ -199,21 +201,20 @@ class PlannerInterface(object):
         c_time=t_out-t_in
         print("==>  tries: "+str(tries)+" complete: "+str(fraction*100)+"%  in: "+str(c_time)+" sec")#process results
         
+        #-- Scaling speeds for Niryo One
         print("Retiming trajectory at "+str(velocity*100)+"% speed..")
-        plan=move_group.retime_trajectory(initial_state, plan, velocity) #ref_state_in, plan, velocity scale
+        plan=move_group.retime_trajectory(initial_state, plan, velocity) #ref_state_in, plan, velocity sc
         print("Done")
         
         #-- Modification to allow stop&go extrusion on same point (same point=same timing)
-        init_t=0
-        for i in range(0,len(plan.joint_trajectory.points)):
-         if(plan.joint_trajectory.points[i].time_from_start.nsecs==init_t):
-          plan.joint_trajectory.points[i].time_from_start.nsecs+=1
-         init_t=plan.joint_trajectory.points[i].time_from_start.nsecs
-        
-        print(plan.joint_trajectory.points[:5])
+        # init_t=0
+        # for i in range(0,len(plan.joint_trajectory.points)):
+         # if(plan.joint_trajectory.points[i].time_from_start.nsecs==init_t):
+          # plan.joint_trajectory.points[i].time_from_start.nsecs+=1
+         # init_t=plan.joint_trajectory.points[i].time_from_start.nsecs
         
         print "Expected printing time :", plan.joint_trajectory.points[-1].time_from_start.secs," secs",plan.joint_trajectory.points[-1].time_from_start.nsecs,"nsecs"
-        end_joints=list(plan.joint_trajectory.points[-1].positions)
+        end_joints=list(plan.joint_trajectory.points[-1].positions)# returns last position in case of using multiple trajectories that are following each other
         
         return plan , end_joints
 
@@ -226,20 +227,14 @@ class PlannerInterface(object):
     t_out=time.time()
     print "Finished at : ", time.asctime(time.localtime(t_out))
     print "Elapsed : ", t_out-t_in
-  
-  def tracker(self,duration): #--Not working: arm pose doesnt update
-    for i in range(0,duration):
-     a=n.get_arm_pose()
-     print a
-     print "\t---------------------------- ",i
-     time.sleep(1)
     
   def timing_extrusion(self, extru, traj):
-    t=0
-    i=0
-    while i<len(extru):
-     i+=1
-     time.sleep(traj.points[i].time_from_start.secs+traj.points[i].time_from_start.nsecs*pow(10,-9) - t)
+    tref=time.time()
+    for i in range(0,len(extru)):
+     t=traj.points[i].time_from_start.secs + traj.points[i].time_from_start.nsecs * pow(10,-9)
+     while( time.time() < (tref+t)):
+      pass
+     n.digital_write(GPIO_1C, extru[i])
           
 
     
@@ -256,16 +251,18 @@ way, extru = Instance.waypoints_path()
 # ---------------------------------------------------------------------------------------------------------------------------------
 if(not(test_mode) and way!=0):# Classic mode -----
  cartesian_plan, end_joints = Instance.plan_cartesian_path(way,n.get_joints())
- #print(len(cartesian_plan.joint_trajectory.points))
  a=raw_input("Execute trajectory ? (yes/no) ")
  if(a=='yes'):
+  n.pin_mode(GPIO_1B,PIN_MODE_OUTPUT)
+  n.digital_write(GPIO_1B,1)
+  n.pin_mode(GPIO_1C,PIN_MODE_OUTPUT) 
   job=Process(target=time_bar, args=(cartesian_plan.joint_trajectory.points[-1].time_from_start.secs,))
-  #job2=Process(target=Instance.timing_extrusion, args=(extru, cartesian_plan.joint_trajectory,))
+  job2=Process(target=Instance.timing_extrusion, args=(extru, cartesian_plan.joint_trajectory,))
   job.start()
-  #job2.start()
+  job2.start()
   Instance.execute_plan(cartesian_plan)
   os.kill(int(job.pid), signal.SIGKILL) #kill process by the hard method (terminate and join doesnt work)
-  #os.kill(int(job2.pid), signal.SIGKILL) #kill process by the hard method (terminate and join doesnt work)
+  os.kill(int(job2.pid), signal.SIGKILL) #kill process by the hard method (terminate and join doesnt work)
   
 
 
