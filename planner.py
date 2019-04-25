@@ -3,8 +3,10 @@ import os
 import sys
 import copy
 import rospy
-import readline #to allow autocompletion
-from progress.bar import FillingCirclesBar
+import readline # autocompletion
+from progress.bar import FillingCirclesBar #progress bar
+from progress.bar import ChargingBar
+import multiprocessing #threading execution of the plan
 import moveit_commander
 import geometry_msgs.msg
 from math import pi
@@ -36,35 +38,29 @@ cyellow='\033[93m'
 cblue='\033[94m'
 
 dir=os.getcwd()+"/Trajectories"
-filenames=os.listdir(dir)
+files=os.listdir(dir)
 
 def completer(text, state):
-    options = [x for x in filenames if x.startswith(text)]
+    options = [x for x in files if x.startswith(text)]
     try:
         return options[state]
     except IndexError:
         return None
 
 
-class MoveGroupPythonInterfaceTutorial(object):
-  """MoveGroupPythonInterfaceTutorial"""
+class PlannerInterface(object):
+  
   def __init__(self):
-    super(MoveGroupPythonInterfaceTutorial, self).__init__()
+    super(PlannerInterface, self).__init__()
 		# First initialize `moveit_commander`_ and a `rospy`_ node:
     moveit_commander.roscpp_initialize(sys.argv)
-    rospy.init_node('move_group_python_interface_tutorial')
+    rospy.init_node('PlannerInterface')
 
-		# Instantiate a `RobotCommander`_ object. Provides information such as the robot's
-		# kinematic model and the robot's current joint states
-    robot = moveit_commander.RobotCommander()
-
-		# Instantiate a `PlanningSceneInterface`_ object.  This provides a remote interface
-		# for getting, setting, and updating the robot's internal understanding of the
-		# surrounding world:
-    scene = moveit_commander.PlanningSceneInterface()
-
-		# Instantiate a `MoveGroupCommander`_ object.  This object is an interface
-		# to a planning group (group of joints).
+		# Instantiate a `RobotCommander`_ object. Provides information such as the robot's kinematic model and the robot's current joint states
+    #robot = moveit_commander.RobotCommander()
+		# Instantiate a `PlanningSceneInterface`_ object.  This provides a remote interface for getting, setting, and updating the robot's internal understanding of the world
+    #scene = moveit_commander.PlanningSceneInterface()
+		# Instantiate a `MoveGroupCommander`_ object.  This object is an interface to a planning group (group of joints).
     group_name = "arm"
     move_group = moveit_commander.MoveGroupCommander(group_name)
     
@@ -96,11 +92,12 @@ class MoveGroupPythonInterfaceTutorial(object):
         # --- Adding points to follow in path
         print(cblue+"\n\t === Acquire a trajectory === \n"+cend)
         print "Current directory: ", dir
-        print "Files found: \n", filenames
+        print "Files found: \n"
+        print '\n'.join(files)
         readline.set_completer(completer)#active autocompletion on filenames
         readline.parse_and_bind("tab: complete")
         
-        filename=raw_input("Getting path from file: ")
+        filename=raw_input("\nGetting path from file: ")
         way=open("Trajectories/"+filename,'r')
         os.system('clear')
         print("\t-> file : "+filename)
@@ -151,13 +148,12 @@ class MoveGroupPythonInterfaceTutorial(object):
         return waypoints
         
 
-  def plan_cartesian_path(self, waypoints): #This function is used to plan the path (calculating accelerations,velocities,positions etc..)
+  def plan_cartesian_path(self, waypoints, start_joints): #This function is used to plan the path (calculating accelerations,velocities,positions etc..)
 
         move_group = self.move_group
         
         # --- Saving start state
-        joints=n.get_joints()
-        tab_joints=[joints[0], joints[1],joints[2],joints[3],joints[4],joints[5]]
+        tab_joints=[start_joints[0], start_joints[1],start_joints[2],start_joints[3],start_joints[4],start_joints[5]]
         # --- Sending start state
         joint_state = JointState()
         joint_state.header = Header()
@@ -202,102 +198,56 @@ class MoveGroupPythonInterfaceTutorial(object):
         print("==>  tries: "+str(tries)+" complete: "+str(fraction*100)+"%  in: "+str(c_time)+" sec")#process results
         
         print("Retiming trajectory at "+str(velocity*100)+"% speed..")
-        plan2=move_group.retime_trajectory(initial_state, plan, velocity) #ref_state_in, plan, velocity scale
+        plan=move_group.retime_trajectory(initial_state, plan, velocity) #ref_state_in, plan, velocity scale
         print("Done")
-        
-        return plan2 , fraction, c_time
+        print "Expected printing time :", plan.joint_trajectory.points[-1].time_from_start.secs," secs",plan.joint_trajectory.points[-1].time_from_start.nsecs,"nsecs"
+        end_joints=list(plan.joint_trajectory.points[-1].positions)
+        return plan , end_joints
 
   def execute_plan(self, plan): #This function is used to allow execution of the trajectory by Niryo arm
     move_group = self.move_group
-    print("Started at: "+str(time.time()))
-    move_group.execute(plan,wait=True)
     
-  def max_time_compute(self,waypoints,cycles): #This function is only used for benchmarking cartesian path method on 'cycles' computation
-  
-   move_group=self.move_group
-   max_time=0
-   average=0
-   for i in range (0,cycles):
-    plan,fraction,c_time=self.plan_cartesian_path(waypoints)
-    average=average+c_time
-    if (c_time>max_time):
-     max_time=c_time
-   average=average/cycles
-   print("==> average time computation: "+str(average)+" sec | max time computation: "+str(max_time)) 
+    t_in=time.time()
+    print "Started at : ", time.asctime(time.localtime(t_in))
+    move_group.execute(plan,wait=True)
+    t_out=time.time()
+    print "Finished at : ", time.asctime(time.localtime(t_out))
+    print "Elapsed : ", t_out-t_in
+    
 
-  def precision_on_pose(self,ref):
-   list=[0,0,0,0,0,0]
-   pose=n.get_arm_pose()
-   list[0]= pose.position.x -ref[0]
-   list[1]= pose.position.y -ref[1]
-   list[2]= pose.position.z -ref[2]
-   list[3]= pose.rpy.roll -ref[3]
-   list[4]= pose.rpy.pitch -ref[4]
-   list[5]= pose.rpy.yaw -ref[5]
-   repeatability=sqrt(pow(list[0],2)+pow(list[1],2)+pow(list[2],2))
-   print "distance from desired pose: ", repeatability
-   return list,repeatability
-   
+def time_bar(duration):
+ t_in=time.time()
+ t_actual=t_in
+ state=ChargingBar('Progress',max=duration)
+ while(int(t_actual-t_in)<duration):
+  time.sleep(1)
+  t_actual=time.time()
+  state.next()
+ state.finish()
+  
+  
    
 #------------------------------------------------------------
 #  --------   MAIN  --------------------
 #------------------------------------------------------------
 
 os.system('clear')
-print(cplanner+"\n\t >  - -    Demonstrateur Niryo One - Surmoul 3D    - -  < \n"+cend)
-Instance = MoveGroupPythonInterfaceTutorial()
+print(cplanner+"\n\t   >  - -    Demonstrateur Niryo One - Surmoul 3D    - -  <   \n"+cend)
+Instance = PlannerInterface()
 way = Instance.waypoints_path()
-  
-if(test_mode==1 and len(way)==1):# Benchmarking mode -----------
- nb=input("Number of cycles ? ")
- t_exec_maxi=0
- t_exec_mini=999
- t_cmp_maxi=0
- t_cmp_mini=999
- repeat_max=0
- repeat_moy=0
- max_errors=[0,0,0,0,0,0] #containing maximal errors on x,y,z,rx,ry,rz
- 
- for i in range(0,nb):
-  n.move_pose(0.2,0,0.150,0,0,0,)#waiting position
-  time.sleep(0.5)
-  cartesian_plan, fraction,c_time = Instance.plan_cartesian_path(way)
-  if(c_time>t_cmp_maxi):
-   t_cmp_maxi=c_time
-  if(c_time<t_cmp_mini):
-   t_cmp_mini=c_time
-   
-  t_exec=Instance.execute_plan(cartesian_plan)
-  
-  if(t_exec>t_exec_maxi):
-   t_exec_maxi=t_exec
-  if(t_exec<t_exec_mini):
-   t_exec_mini=t_exec
-   
-  time.sleep(1)#sleep to get enough time to stabilize the arm
-  l,repeatability=Instance.precision_on_pose([0.3-0.0388,-0.1,0.25+0.04468,0,0,0])
-  if(repeatability>repeat_max):
-   repeat_max=repeatability
-  repeat_moy+=repeatability
-  for j in range(0,6):
-   if(abs(l[j])>max_errors[j]):
-    max_errors[j]=abs(l[j])
- repeat_moy=repeat_moy/nb
- print "\n T_execution_maxi: ",t_exec_maxi," T_execution_mini: ",t_exec_mini
- print "T_computation_maxi: ",t_cmp_maxi," T_computation_mini: ",t_cmp_mini
- print "Maximum errors: ",max_errors
- print "Maximum repeatability", repeat_max
- print "Average repeatability", repeat_moy
- 
- 
- 
+
 # ---------------------------------------------------------------------------------------------------------------------------------
 if(not(test_mode) and way!=0):# Classic mode -----
- cartesian_plan, fraction,c_time = Instance.plan_cartesian_path(way)
- print("Execute trajectory ? (yes/no)")
- a=raw_input()
+ cartesian_plan, end_joints = Instance.plan_cartesian_path(way,n.get_joints())
+ a=raw_input("Execute trajectory ? (yes/no) ")
  if(a=='yes'):
+  job=multiprocessing.Process(target=time_bar, args=(cartesian_plan.joint_trajectory.points[-1].time_from_start.secs,))
+  job.start()
   Instance.execute_plan(cartesian_plan)
+  job.join()
+
+  
+# do something to prevent programm ending
 
 
 print(cgreen+"\n --- Program ended ---\n"+cend)
