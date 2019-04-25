@@ -92,7 +92,7 @@ class PlannerInterface(object):
         wpose.orientation.z=n.get_arm_pose().rpy.yaw       #
         
         waypoints=[]
-        waypoints.append(copy.deepcopy(wpose))#store start state to reduce jerk at the beginning
+        waypoints.append(copy.deepcopy(wpose))#store current state to reduce jerk at the beginning
         # --- Adding points to follow in path
         print(cblue+"\n\t === Acquire a trajectory === \n"+cend)
         print "Current directory: ", dir
@@ -105,14 +105,15 @@ class PlannerInterface(object):
         way=open("Trajectories/"+filename,'r')
         os.system('clear')
         print("\t-> file : "+filename)
-        nbr = 0        
+              
         line=way.readline()
+        nbr = 1  
         #-- counting lines and checking errors
         
         while line:
          nbr += 1
          line=way.readline()
-         if(len(line.split(' '))!=7 and line!=""):
+         if(len(line.split(' '))!=8 and line!=""):
           print(cred+"Error line "+str(nbr)+" does not contain 3 positions + 4 quaternions values :"+cend)
           print line
           return 0
@@ -120,6 +121,7 @@ class PlannerInterface(object):
         i=0
         print "lines:",nbr
         
+        extru=[]
         #-- calculating travelling distance
         traveling_distance=0
         wpose.position.x=0 #reset pose
@@ -127,7 +129,7 @@ class PlannerInterface(object):
         wpose.position.z=0
         
         bar=FillingCirclesBar('Processing waypoints', max=nbr)
-        while(i<=nbr-1):
+        while(i<=nbr-2):
          i+=1
          bar.next()
          tab=way.readline().split(' ')
@@ -140,7 +142,8 @@ class PlannerInterface(object):
          wpose.orientation.x= float(tab[3]) #- Quaternion
          wpose.orientation.y= float(tab[4])
          wpose.orientation.z= float(tab[5])
-         wpose.orientation.w= float(tab[6]) 
+         wpose.orientation.w= float(tab[6])
+         extru.append(int(tab[7]))
          waypoints.append(copy.deepcopy(wpose))
         #-- Outing trajectory
         wpose.position.z+=0.1
@@ -149,7 +152,7 @@ class PlannerInterface(object):
         bar.finish()
         print("Trajectory points found: "+str(len(waypoints)))
         print("Traveling distance: "+str(traveling_distance)+" meters")
-        return waypoints
+        return waypoints, extru
         
 
   def plan_cartesian_path(self, waypoints, start_joints): #This function is used to plan the path (calculating accelerations,velocities,positions etc..)
@@ -199,8 +202,19 @@ class PlannerInterface(object):
         print("Retiming trajectory at "+str(velocity*100)+"% speed..")
         plan=move_group.retime_trajectory(initial_state, plan, velocity) #ref_state_in, plan, velocity scale
         print("Done")
+        
+        #-- Modification to allow stop&go extrusion on same point (same point=same timing)
+        init_t=0
+        for i in range(0,len(plan.joint_trajectory.points)):
+         if(plan.joint_trajectory.points[i].time_from_start.nsecs==init_t):
+          plan.joint_trajectory.points[i].time_from_start.nsecs+=1
+         init_t=plan.joint_trajectory.points[i].time_from_start.nsecs
+        
+        print(plan.joint_trajectory.points[:5])
+        
         print "Expected printing time :", plan.joint_trajectory.points[-1].time_from_start.secs," secs",plan.joint_trajectory.points[-1].time_from_start.nsecs,"nsecs"
         end_joints=list(plan.joint_trajectory.points[-1].positions)
+        
         return plan , end_joints
 
   def execute_plan(self, plan): #This function is used to allow execution of the trajectory by Niryo arm
@@ -220,6 +234,13 @@ class PlannerInterface(object):
      print "\t---------------------------- ",i
      time.sleep(1)
     
+  def timing_extrusion(self, extru, traj):
+    t=0
+    i=0
+    while i<len(extru):
+     i+=1
+     time.sleep(traj.points[i].time_from_start.secs+traj.points[i].time_from_start.nsecs*pow(10,-9) - t)
+          
 
     
    
@@ -230,17 +251,21 @@ class PlannerInterface(object):
 os.system('clear')
 print(cplanner+"\n\t   >  - -    Demonstrateur Niryo One - Surmoul 3D    - -  <   \n"+cend)
 Instance = PlannerInterface()
-way = Instance.waypoints_path()
+way, extru = Instance.waypoints_path()
 
 # ---------------------------------------------------------------------------------------------------------------------------------
 if(not(test_mode) and way!=0):# Classic mode -----
  cartesian_plan, end_joints = Instance.plan_cartesian_path(way,n.get_joints())
+ #print(len(cartesian_plan.joint_trajectory.points))
  a=raw_input("Execute trajectory ? (yes/no) ")
  if(a=='yes'):
   job=Process(target=time_bar, args=(cartesian_plan.joint_trajectory.points[-1].time_from_start.secs,))
+  #job2=Process(target=Instance.timing_extrusion, args=(extru, cartesian_plan.joint_trajectory,))
   job.start()
+  #job2.start()
   Instance.execute_plan(cartesian_plan)
   os.kill(int(job.pid), signal.SIGKILL) #kill process by the hard method (terminate and join doesnt work)
+  #os.kill(int(job2.pid), signal.SIGKILL) #kill process by the hard method (terminate and join doesnt work)
   
 
 
