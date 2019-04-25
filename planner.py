@@ -62,7 +62,7 @@ class MoveGroupPythonInterfaceTutorial(object):
 
         # --- Getting current pose
         wpose = move_group.get_current_pose().pose # ( -!!- values given by MoveGroupCommander are different from true values)
-    	wpose.position.x=n.get_arm_pose().position.x         #
+    	wpose.position.x=n.get_arm_pose().position.x          #
         wpose.position.y=n.get_arm_pose().position.y         #
         wpose.position.z=n.get_arm_pose().position.z         # updating with true values from niryo 
         wpose.orientation.x=n.get_arm_pose().rpy.roll        #
@@ -79,9 +79,12 @@ class MoveGroupPythonInterfaceTutorial(object):
         print "Getting path from file: "
         filename=raw_input()
         way=open("Trajectories/"+filename+".csv",'r')
+        os.system('clear')
+        print("\t-> file : "+filename+".csv")
         nbr = 0        
         line=way.readline()
-        while line:#counting lines and checking errors
+        #-- counting lines and checking errors
+        while line:
          nbr += 1
          line=way.readline()
          if(len(line.split(' '))!=7 and line!=""):
@@ -91,7 +94,13 @@ class MoveGroupPythonInterfaceTutorial(object):
         way.seek(0)
         i=0
         print "lines:",nbr
+        
+        #-- calculating travelling distance
         traveling_distance=0
+        wpose.position.x=0 #reset pose
+        wpose.position.y=0
+        wpose.position.z=0
+        
         while(i<=nbr-1):
          i+=1
          tab=way.readline().split(' ')
@@ -150,7 +159,7 @@ class MoveGroupPythonInterfaceTutorial(object):
         tries=0
         max_tries=10
         eef_step=1.0 #eef_step at 1.0 considering gcode is already an interpolation
-        velocity=0.25
+        velocity=0.03
         
         print "Max tries authorized : ", max_tries, "eef step : ", eef_step
         t_in=time.time()
@@ -208,7 +217,7 @@ class MoveGroupPythonInterfaceTutorial(object):
 #  --------   MAIN  --------------------
 #------------------------------------------------------------
 
-
+os.system('clear')
 Instance = MoveGroupPythonInterfaceTutorial()
 way = Instance.waypoints_path()
   
