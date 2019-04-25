@@ -231,8 +231,10 @@ class PlannerInterface(object):
   def timing_extrusion(self, extru, traj):
     tref=time.time()
     for i in range(0,len(extru)):
-     t=traj.points[i].time_from_start.secs + traj.points[i].time_from_start.nsecs * pow(10,-9)
-     while( time.time() < (tref+t)):
+     t=tref + traj.points[i].time_from_start.secs + traj.points[i].time_from_start.nsecs * pow(10,-9)
+     if(traj.points[i].time_from_start.secs - traj.points[i-1].time_from_start.secs > 2):
+      time.sleep(traj.points[i].time_from_start.secs - traj.points[i-1].time_from_start.secs - 2) #sleep to reduce CPU usage when high duration between points
+     while( time.time() < (t)):
       pass
      n.digital_write(GPIO_1C, extru[i])
           
