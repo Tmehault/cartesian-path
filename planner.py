@@ -3,6 +3,8 @@ import os
 import sys
 import copy
 import rospy
+import readline #to allow autocompletion
+from progress.bar import FillingCirclesBar
 import moveit_commander
 import geometry_msgs.msg
 from math import pi
@@ -17,6 +19,7 @@ from std_msgs.msg import Header
 from niryo_one_commander.position.position import Position
 import tf
 
+
 from niryo_one_python_api.niryo_one_api import *
 import time
 
@@ -25,11 +28,22 @@ n = NiryoOne()
 test_mode=0 #classic mode 0, test mode for benchmarking 1
 
 #colors
+cplanner='\033[104m'
 cred='\033[91m'
 cend='\033[0m'
 cgreen='\033[92m'
 cyellow='\033[93m'
 cblue='\033[94m'
+
+dir=os.getcwd()+"/Trajectories"
+filenames=os.listdir(dir)
+
+def completer(text, state):
+    options = [x for x in filenames if x.startswith(text)]
+    try:
+        return options[state]
+    except IndexError:
+        return None
 
 
 class MoveGroupPythonInterfaceTutorial(object):
@@ -80,18 +94,20 @@ class MoveGroupPythonInterfaceTutorial(object):
         waypoints=[]
         waypoints.append(copy.deepcopy(wpose))#store start state to reduce jerk at the beginning
         # --- Adding points to follow in path
-        print(cgreen+"\n\t === Acquire a trajectory === \n"+cend)
-        dir=os.getcwd()+"/Trajectories"
+        print(cblue+"\n\t === Acquire a trajectory === \n"+cend)
         print "Current directory: ", dir
-        print "Files found: \n", os.listdir(dir)
-        print "Getting path from file: "
-        filename=raw_input()
-        way=open("Trajectories/"+filename+".csv",'r')
+        print "Files found: \n", filenames
+        readline.set_completer(completer)#active autocompletion on filenames
+        readline.parse_and_bind("tab: complete")
+        
+        filename=raw_input("Getting path from file: ")
+        way=open("Trajectories/"+filename,'r')
         os.system('clear')
-        print("\t-> file : "+filename+".csv")
+        print("\t-> file : "+filename)
         nbr = 0        
         line=way.readline()
         #-- counting lines and checking errors
+        
         while line:
          nbr += 1
          line=way.readline()
@@ -109,8 +125,10 @@ class MoveGroupPythonInterfaceTutorial(object):
         wpose.position.y=0
         wpose.position.z=0
         
+        bar=FillingCirclesBar('Processing waypoints', max=nbr)
         while(i<=nbr-1):
          i+=1
+         bar.next()
          tab=way.readline().split(' ')
          traveling_distance += sqrt(pow(float(tab[0])-wpose.position.x,2) + pow(float(tab[1])-wpose.position.y,2) + pow(float(tab[2])-wpose.position.z,2))
 
@@ -127,7 +145,7 @@ class MoveGroupPythonInterfaceTutorial(object):
         wpose.position.z+=0.1
         waypoints.append(copy.deepcopy(wpose))
         way.close()
-        
+        bar.finish()
         print("Trajectory points found: "+str(len(waypoints)))
         print("Traveling distance: "+str(traveling_distance)+" meters")
         return waypoints
@@ -160,22 +178,25 @@ class MoveGroupPythonInterfaceTutorial(object):
 		# translation.  We will disable the jump threshold by setting it to 0.0,
 		# ignoring the check for infeasible jumps in joint space, which is sufficient
 		# for this tutorial.
-        print(cgreen+"\n\t === Compute a trajectory ===\n"+cend)
+        print(cblue+"\n\t === Compute a trajectory ===\n"+cend)
         
         #-- Parameters
         fraction=0.0
         tries=0
         max_tries=10
         eef_step=1.0 #eef_step at 1.0 considering gcode is already an interpolation
-        velocity=0.05
+        velocity=0.03
         
-        print "Max tries authorized : ", max_tries, "eef step : ", eef_step
+        print "Max tries authorized : ", max_tries, "\neef step : ", eef_step
         t_in=time.time()
         while(fraction<1.0 and tries<10):
          (plan, fraction) = move_group.compute_cartesian_path(waypoints,eef_step, 0.0) 
 										      # waypoints to follow# eef_step in meters# jump_threshold
          tries+=1
-         print(cyellow+"\t---try:"+str(tries)+"\t---completed:"+str(fraction*100)+"%"+cend)#printing iterations
+         if(fraction<1.0):
+          print(cred+"\t---try:"+str(tries)+"\t---completed:"+str(fraction*100)+"%"+cend)#printing iterations
+         else:
+          print(cgreen+"\t---try:"+str(tries)+"\t---completed:"+str(fraction*100)+"%"+cend)#printing iterations
         t_out=time.time()
         c_time=t_out-t_in
         print("==>  tries: "+str(tries)+" complete: "+str(fraction*100)+"%  in: "+str(c_time)+" sec")#process results
@@ -188,11 +209,8 @@ class MoveGroupPythonInterfaceTutorial(object):
 
   def execute_plan(self, plan): #This function is used to allow execution of the trajectory by Niryo arm
     move_group = self.move_group
-    t_in=time.time()
+    print("Started at: "+str(time.time()))
     move_group.execute(plan,wait=True)
-    t_out=time.time()
-    print("Started at: "+str(t_in)+" elapsed time:"+str(t_out-t_in))
-    return t_out-t_in
     
   def max_time_compute(self,waypoints,cycles): #This function is only used for benchmarking cartesian path method on 'cycles' computation
   
@@ -226,6 +244,7 @@ class MoveGroupPythonInterfaceTutorial(object):
 #------------------------------------------------------------
 
 os.system('clear')
+print(cplanner+"\n\t >  - -    Demonstrateur Niryo One - Surmoul 3D    - -  < \n"+cend)
 Instance = MoveGroupPythonInterfaceTutorial()
 way = Instance.waypoints_path()
   
@@ -275,7 +294,7 @@ if(test_mode==1 and len(way)==1):# Benchmarking mode -----------
 # ---------------------------------------------------------------------------------------------------------------------------------
 if(not(test_mode) and way!=0):# Classic mode -----
  cartesian_plan, fraction,c_time = Instance.plan_cartesian_path(way)
- print(cblue+"Execute trajectory ? (yes/no)"+cend)
+ print("Execute trajectory ? (yes/no)")
  a=raw_input()
  if(a=='yes'):
   Instance.execute_plan(cartesian_plan)
