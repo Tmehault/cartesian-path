@@ -80,16 +80,19 @@ class MoveGroupPythonInterfaceTutorial(object):
         filename=raw_input()
         way=open("Trajectories/"+filename+".csv",'r')
         nbr = 0        
-        
-        while way.readline():#counting lines
+        line=way.readline()
+        while line:#counting lines and checking errors
          nbr += 1
-         if(len(way.readline().split(' '))!=7):
-          print "Error line ", nbr," does not contain 3 positions + 4 quaternions values"
+         line=way.readline()
+         if(len(line.split(' '))!=7 and line!=""):
+          print "Error line ", nbr," does not contain 3 positions + 4 quaternions values :"
+          print line
           return 0
         way.seek(0)
         i=0
+        print "lines:",nbr
         traveling_distance=0
-        while(i<=nbr):
+        while(i<=nbr-1):
          i+=1
          tab=way.readline().split(' ')
          traveling_distance += sqrt(pow(float(tab[0])-wpose.position.x,2) + pow(float(tab[1])-wpose.position.y,2) + pow(float(tab[2])-wpose.position.z,2))
@@ -103,6 +106,9 @@ class MoveGroupPythonInterfaceTutorial(object):
          wpose.orientation.z= float(tab[5])
          wpose.orientation.w= float(tab[6]) 
          waypoints.append(copy.deepcopy(wpose))
+        #-- Outing trajectory
+        wpose.position.z+=0.1
+        waypoints.append(copy.deepcopy(wpose))
         way.close()
         
         print("Trajectory points found: "+str(len(waypoints)))
@@ -123,9 +129,9 @@ class MoveGroupPythonInterfaceTutorial(object):
         joint_state.header.stamp = rospy.Time.now()
         joint_state.name = ['joint_1', 'joint_2','joint_3','joint_4','joint_5','joint_6']
         joint_state.position = tab_joints
-        moveit_robot_state = RbState()
-        moveit_robot_state.joint_state = joint_state
-        move_group.set_start_state(moveit_robot_state)
+        initial_state = RbState()
+        initial_state.joint_state = joint_state
+        move_group.set_start_state(initial_state)
         
         
         # --- Getting waypoints
@@ -138,11 +144,15 @@ class MoveGroupPythonInterfaceTutorial(object):
 		# ignoring the check for infeasible jumps in joint space, which is sufficient
 		# for this tutorial.
         print "\n\t === Compute a trajectory ===\n"
+        
+        #-- Parameters
         fraction=0.0
         tries=0
         max_tries=10
-        eef_step=0.0005 #eef_step at 1.0 considering gcode is already an interpolation
-        print "Number of tries : ", max_tries, "eef step : ", eef_step
+        eef_step=1.0 #eef_step at 1.0 considering gcode is already an interpolation
+        velocity=0.25
+        
+        print "Max tries authorized : ", max_tries, "eef step : ", eef_step
         t_in=time.time()
         while(fraction<1.0 and tries<10):
          (plan, fraction) = move_group.compute_cartesian_path(waypoints,eef_step, 0.0) 
@@ -153,12 +163,11 @@ class MoveGroupPythonInterfaceTutorial(object):
         c_time=t_out-t_in
         print("==>  tries: "+str(tries)+" complete: "+str(fraction*100)+"%  in: "+str(c_time)+" sec")#process results
         
-        velocity=0.5
         print("Retiming trajectory at "+str(velocity*100)+"% speed..")
-        plan2=move_group.retime_trajectory(moveit_robot_state, plan, velocity) #ref_state_in, plan, velocity scale
+        plan2=move_group.retime_trajectory(initial_state, plan, velocity) #ref_state_in, plan, velocity scale
         print("Done")
 
-        return plan , fraction, c_time
+        return plan2 , fraction, c_time
 
   def execute_plan(self, plan): #This function is used to allow execution of the trajectory by Niryo arm
     move_group = self.move_group
