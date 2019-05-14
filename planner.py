@@ -1,17 +1,19 @@
 #!/usr/bin/env python
+# -*- coding: utf-8 -*-
 #Modules
 import os
 import sys
 import copy
 import rospy
 import readline # autocompletion
-from progress.bar import FillingCirclesBar, ChargingBar #progress bar
+import serial #arduino serial connection
+from progress.bar import Bar #progress bar
 from multiprocessing import Process
 import signal
 import moveit_commander
 import time
 from math import pi, sqrt, pow
-from tf.transformations import quaternion_from_euler, quaternion_multiply
+from tf.transformations import quaternion_from_euler, quaternion_multiply,quaternion_conjugate
 from niryo_one_python_api.niryo_one_api import *
 #Messages
 from std_msgs.msg import String, Header
@@ -24,7 +26,7 @@ from geometry_msgs.msg import Pose
 
 n = NiryoOne()
 
-offsets_niryo=[0,0,0] #offsets for 2D+ printing (gcode origin: 0,0,0) [-0.89349, -0.08603, -0.332] 
+offsets_niryo=[0,0,0] #offsets for 2D+ printing (gcode origin: 0,0,0) 
 
 #Colors 
 cplanner='\033[1;104m'
@@ -35,6 +37,7 @@ cyellow='\033[1;93m'
 cblue='\033[1;94m'
 
 #Global variables
+distance_offset= 14 #desired normal distance from surface described in file in mm
 dir=os.getcwd()+"/Trajectories"
 files=os.listdir(dir)
 
@@ -48,12 +51,21 @@ def completer(text, state): #This function is doing the autocompletion to choose
 def time_bar(duration): #This function is only updating a loading bar while printing (visual effect)
  t_in=time.time()
  t_actual=t_in
- state=ChargingBar('Progress',max=duration-1)
+ state= Bar('Progress',max=duration-1,empty_fill='-',fill=cblue+'>'+cend,suffix='%(percent).1f%% - Remaining:%(eta)ds')
  while(int(t_actual-t_in)<duration):
   time.sleep(1)
   t_actual=time.time()
   state.next()
  state.finish()
+
+def qv_mult2(v1, q1): # This function rotate a vector v1 by a quaternion q1
+    #v1 = unit_vector(v1)
+    q2 = list(v1)
+    q2.append(0.0)
+    #normalize quaternion
+    s=1#sqrt(pow(q1[0],2) + pow(q1[1],2) + pow(q1[2],2) + pow(q1[3],2))
+    quat=[ q1[1]/s, q1[2]/s, q1[3]/s, q1[0]/s] 
+    return quaternion_multiply(q2, q1 )[:3]
 
 class PlannerInterface(object):
   
@@ -117,28 +129,27 @@ class PlannerInterface(object):
         
         extru=[0] #initialized with zero to prevent extrusion between start state and beginning of the real trajectory
         traveling_distance=0 #to calculate travelling distance
-        wpose.position.x=0  #set pose to 0 to calculate first distance
-        wpose.position.y=0  #
-        wpose.position.z=0  #
+        
         q2=quaternion_from_euler(pi/2,0,0) #quaternion used to rotate the other one
-        bar=FillingCirclesBar('Processing waypoints', max=nbr-1)
+        bar=Bar('Processing waypoints', max=nbr-1,width=10)
         i=0
-
+        distance_btwn_points=[]
+        prev_x=0
+        prev_y=0
+        prev_z=0
         while(i<=nbr-2):
          i+=1
          bar.next()
          tab=way.readline().split(' ')
-         if(extru[i-1]==1): #calculating only on printing sections
-          traveling_distance += sqrt(pow(float(tab[0])-wpose.position.x,2) + pow(float(tab[1])-wpose.position.y,2) + pow(float(tab[2])-wpose.position.z,2))
-
-         wpose.position.x= float(tab[0]) + offsets_niryo[0] #- Position
-         wpose.position.y= float(tab[1]) + offsets_niryo[1]
-         wpose.position.z= float(tab[2]) + offsets_niryo[2]
          if(gcode):
+          wpose.position.x= float(tab[0]) + offsets_niryo[0] #- Position
+          wpose.position.y= float(tab[1]) + offsets_niryo[1]
+          wpose.position.z= float(tab[2]) + offsets_niryo[2]
           wpose.orientation.w= 1 #- Quaternion (doesnt even need to make unecessary arithmetic and memory usage by converting each tab[] to float)
           wpose.orientation.x= 0
           wpose.orientation.y= 0
           wpose.orientation.z= 0
+
          else: #- Need quaternion transformation 
           q1=[ - float(tab[3]),float(tab[4]),float(tab[5]),float(tab[6])] #inverse quaternion by negate w
           q3=quaternion_multiply(q1, q2) #then rotate by q2
@@ -148,16 +159,28 @@ class PlannerInterface(object):
           wpose.orientation.x= q3[1]
           wpose.orientation.y= q3[2]
           wpose.orientation.z= q3[3]
+
+          fac=distance_offset
+          d=quaternion_multiply([fac,0,0,0], q3)
+          wpose.position.x= float(tab[0]) + offsets_niryo[0] + d[1]/1000 #- Position
+          wpose.position.y= float(tab[1]) + offsets_niryo[1] + d[2]/1000
+          wpose.position.z= float(tab[2]) + offsets_niryo[2] + d[3]/1000
          
          extru.append(int(tab[7])) #- Extrusion data
+         distance_btwn_points.append( sqrt(pow(wpose.position.x - prev_x,2) + pow(wpose.position.y - prev_y,2) + pow(wpose.position.z - prev_z,2) ) )
+         traveling_distance += distance_btwn_points[-1]
+         prev_x=wpose.position.x
+         prev_y=wpose.position.y
+         prev_z=wpose.position.z
          waypoints.append(copy.deepcopy(wpose))
          
         #-- Outing trajectory---------------
-        wpose.position.z+=0.1
-        wpose.orientation.x= 0 #- Quaternion
-        wpose.orientation.y= 0
+        wpose.position.x += -0.07
+        wpose.position.z+=0.05
+        wpose.orientation.x= 0 #- Quaternion 
+        wpose.orientation.y= 0.259
         wpose.orientation.z= 0
-        wpose.orientation.w= 1
+        wpose.orientation.w= 0.966
         waypoints.append(copy.deepcopy(wpose))
         extru.append(0) #to stop extrusion at the end
         
@@ -165,9 +188,9 @@ class PlannerInterface(object):
         bar.finish()
         traveling_distance=round( traveling_distance / 2.1874 , 2) #ratio filament diameter 1.75mm / nozzle 0.8mm
         a,b=divmod(traveling_distance,1000)
-        print "Trajectory points found: %d" %len(waypoints)
-        print "Necessary Filament: %2dm %3dmm"%(a,b*1000)
-        return waypoints, extru
+        print "Trajectory points found: %d" %(len(waypoints)-1)
+        print "Necessary Filament: %2dm %3dmm"%(a,b*100)
+        return waypoints, distance_btwn_points
         
 
   def plan_cartesian_path(self, waypoints, start_joints): #This function is used to plan the path (calculating accelerations,velocities,positions etc..)
@@ -196,7 +219,7 @@ class PlannerInterface(object):
         tries=0
         max_tries=5  #maximum tries allowed
         eef_step=1.0 #eef_step at 1.0 considering gcode is already an interpolation
-        velocity=1.0 #velocity scaling factor applied to max velocity
+        velocity=0.1 #velocity scaling factor applied to max velocity
         
         print "\n --- Computing parameters ---"
         print "| Max tries authorized : %2d \n| Eef step : %.4f \n| Velocity : %3d %%" %(max_tries,eef_step,velocity*100)
@@ -240,7 +263,6 @@ class PlannerInterface(object):
         if(velocity<1.0):
          print"==>  Retiming trajectory at %3d%% speed.."%(velocity*100)
          best_plan=move_group.retime_trajectory(initial_state, best_plan, velocity) #ref_state_in, plan, velocity sc
-         print "\rDone"
         
         expect_m, expect_s = divmod( best_plan.joint_trajectory.points[-1].time_from_start.secs , 60)
         expect_h, expect_m = divmod( expect_m  , 60)
@@ -260,16 +282,19 @@ class PlannerInterface(object):
     h,m=divmod(m,60)
     print "Elapsed : %dh%02dm%02ds" %(h,m,s)
     
-  def timing_extrusion(self, extru, traj): #This function times the extrusion, aiming to be a real-time function
+  def timing_extrusion(self, distance_btwn_points, traj): #This function times the extrusion, aiming to be a real-time function
     tref=time.time()
-    for i in range(0,len(traj.points)):
-     t=tref + traj.points[i].time_from_start.secs + traj.points[i].time_from_start.nsecs * pow(10,-9)
+    com.write('x251')#extrusion order
+    for i in range(0,len(traj.points)-1):
+     t_next= traj.points[i].time_from_start.secs + traj.points[i].time_from_start.nsecs * pow(10,-9)
+     t=tref + t_next
+     dt= traj.points[i+1].time_from_start.secs + traj.points[i+1].time_from_start.nsecs * pow(10,-9) - t_next
      if(traj.points[i].time_from_start.secs - traj.points[i-1].time_from_start.secs > 1):
       time.sleep(traj.points[i].time_from_start.secs - traj.points[i-1].time_from_start.secs - 0.5) #sleep to reduce CPU usage when high duration between points
      while( time.time() < (t)): #void loop to wait for the right time
       pass
-     n.digital_write(GPIO_1C, extru[i])
-          
+    if(i>=1): 
+     com.write('x'+str(distance_btwn_points[i+1]/dt*1000)) #mm/s
 
     
    
@@ -283,25 +308,36 @@ quit=False
 while(not(quit)):
  os.system('clear')
  print(cgreen+"\n\t   >  - -    Demonstrateur Niryo One - Surmoul 3D    - -  <   \n"+cend)
- way, extru = Instance.create_path()
+ way, distance_btwn_points = Instance.create_path()
 # -------------
  if(way==None): #Error while creating path
      raw_input()
  else:
   cartesian_plan, end_joints = Instance.plan_cartesian_path(way,n.get_joints())
-  a=raw_input(cyellow+"Execute trajectory ? (yes/no/quit) "+cend)
-  if(a=='yes'):
-   n.pin_mode(GPIO_1B,PIN_MODE_OUTPUT) #Setting outputs for RAMPS+Arduino (heat:1B | extrusion:1C)
-   n.digital_write(GPIO_1B,1) #Allow heating
-   n.pin_mode(GPIO_1C,PIN_MODE_OUTPUT) 
+  a=raw_input(cyellow+"Execute trajectory ? (yes/print/no/quit) "+cend)
+  if(a=='yes' or a=='print'):
+   if(a=='print'):
+     com=serial.Serial('/dev/ttyACM0',115200)
+     time.sleep(1)#
+     m=0
+     temp_goal=200
+     com.write('x252')#heating order
+     while(m <= temp_goal):
+         com.write('x250') 
+         m=float(com.readline()[:-2]) #all except \r\n
+         sys.stdout.write("\rHotend Temperature : %.1fdegC (goal:%.1f)"%(m,temp_goal))
+         sys.stdout.flush()
+         time.sleep(2)
+     raw_input("\nTemperature reached, press enter to continue..")
    job=Process(target=time_bar, args=(cartesian_plan.joint_trajectory.points[-1].time_from_start.secs,)) #Multiprocessing to approx real-time control the extrusion and visual effect
-   job2=Process(target=Instance.timing_extrusion, args=(extru, cartesian_plan.joint_trajectory,))
+   job2=Process(target=Instance.timing_extrusion, args=(distance_btwn_points, cartesian_plan.joint_trajectory,))
    job.start()
    job2.start()
    Instance.execute_plan(cartesian_plan)
+   com.write('x251')
+   com.write('x252')
    os.kill(int(job.pid), signal.SIGKILL) #kill process by the hard method (terminate and join doesnt work)
    os.kill(int(job2.pid), signal.SIGKILL) #kill process by the hard method (terminate and join doesnt work)
-   n.digital_write(GPIO_1B,0) #Stop heating
    quit=True
   if(a=='quit'):
    quit=True
