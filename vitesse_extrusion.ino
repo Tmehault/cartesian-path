@@ -6,8 +6,6 @@
 byte directionPin = 28;
 byte stepPin = 26;
 byte enablePin = 24;
-#define motor_enable 16
-#define heat_enable 17
 #define thermistor A13
 #define heat 10
 
@@ -63,8 +61,6 @@ void setup()
   pinMode(directionPin, OUTPUT);
   pinMode(stepPin, OUTPUT);
   pinMode(enablePin, OUTPUT);
-  pinMode(motor_enable, INPUT);
-  pinMode(heat_enable, INPUT);
   pinMode(heat,OUTPUT);
   
   digitalWrite(enablePin, LOW);
@@ -104,9 +100,14 @@ void loop()
        Serial.println(freq_extrusion);
     }
   }
+  if(temp>=220) //overheating security
+  {
+    i_heat=false;
+    i_extrusion=false;
+  }
   }
   currentMillis = millis();//get time
-  if (currentMillis - previousMillis >= freq_heat and i_heat) //time to heat ?
+  if (currentMillis - previousMillis >= freq_heat) //time to heat ?
   {
     Input=temp;
     tempPID.Compute();
@@ -115,7 +116,7 @@ void loop()
       //Serial.println(rtodeg(temp));
       t_print_temp=currentMillis;
     }
-    if(Output==0 and digitalRead(heat_enable)==HIGH)
+    if(Output==0 and i_heat)
     {
       digitalWrite(heat,HIGH);
     }

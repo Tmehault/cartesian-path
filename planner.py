@@ -67,6 +67,22 @@ def qv_mult2(v1, q1): # This function rotate a vector v1 by a quaternion q1
     quat=[ q1[1]/s, q1[2]/s, q1[3]/s, q1[0]/s] 
     return quaternion_multiply(q2, q1 )[:3]
 
+def watchdog_temperature(goal):
+ print "\nStarting temperature watchdog"
+ m=9999
+ com.write('x252') #enable/disable heating
+ while(not(goal-2<m<goal+2)):
+  try:
+    com.write('x250') 
+    m=float(com.readline()[:-2]) #all except \r\n
+    sys.stdout.write("\rHotend Temperature : %.1fdegC (goal:%.1f)"%(m,goal))
+    sys.stdout.flush()
+    time.sleep(2)
+  except KeyboardInterrupt:
+    print ' -> Stopped by Ctrl+C'
+    break
+ raw_input("\nTemperature reached, press enter to continue..")
+
 class PlannerInterface(object):
   
   def __init__(self):
@@ -101,6 +117,7 @@ class PlannerInterface(object):
         readline.parse_and_bind("tab: complete")
         
         filename=raw_input(cyellow+"\nGetting path from file: "+cend)
+
         #-- Test to check file availability
         try:
             way=open("Trajectories/"+filename,'r')
@@ -112,22 +129,25 @@ class PlannerInterface(object):
         print(cgreen+"\n\t   >  - -    Demonstrateur Niryo One - Surmoul 3D    - -  <   \n"+cend)
         print("\n-> file : "+'\033[4m'+filename+cend)
         line=way.readline()
-        gcode=line.startswith('gcode') #Detect if file comes from gcode (true/false)
+        type=line.startswith('gcode') #Detect if file comes from gcode (true/false)
+
         nbr = 1  
         
         #-- Counting lines and looking for errors
         while line:
          nbr += 1
          line=way.readline()
-         if(len(line.split(' '))!=8 and line!=""):
-          print(cred+"Error line "+str(nbr)+" does not contain 3 positions + 4 quaternions values + 1 extrusion value:"+cend)
+         if(len(line.split(' '))!=7 and line!=""):
+          print(cred+"Error line "+str(nbr)+" does not contain 3 positions + 4 quaternions values :"+cend)
           print line
           return None,None
         way.seek(0)
-        if(gcode):
+        if(type):
          line=way.readline()#skip first line
-        
-        extru=[0] #initialized with zero to prevent extrusion between start state and beginning of the real trajectory
+        if(filename=='interactive.txt'):
+            debug=True
+            nbr=int(raw_input('Nbr of lines to read : '))
+
         traveling_distance=0 #to calculate travelling distance
         
         q2=quaternion_from_euler(pi/2,0,0) #quaternion used to rotate the other one
@@ -141,7 +161,7 @@ class PlannerInterface(object):
          i+=1
          bar.next()
          tab=way.readline().split(' ')
-         if(gcode):
+         if(type): #gcode
           wpose.position.x= float(tab[0]) + offsets_niryo[0] #- Position
           wpose.position.y= float(tab[1]) + offsets_niryo[1]
           wpose.position.z= float(tab[2]) + offsets_niryo[2]
@@ -150,7 +170,7 @@ class PlannerInterface(object):
           wpose.orientation.y= 0
           wpose.orientation.z= 0
 
-         else: #- Need quaternion transformation 
+         else: #Rhino #- Need quaternion transformation 
           q1=[ - float(tab[3]),float(tab[4]),float(tab[5]),float(tab[6])] #inverse quaternion by negate w
           q3=quaternion_multiply(q1, q2) #then rotate by q2
           q3[0]=-q3[0] #invert it back
@@ -166,7 +186,6 @@ class PlannerInterface(object):
           wpose.position.y= float(tab[1]) + offsets_niryo[1] + d[2]/1000
           wpose.position.z= float(tab[2]) + offsets_niryo[2] + d[3]/1000
          
-         extru.append(int(tab[7])) #- Extrusion data
          distance_btwn_points.append( sqrt(pow(wpose.position.x - prev_x,2) + pow(wpose.position.y - prev_y,2) + pow(wpose.position.z - prev_z,2) ) )
          traveling_distance += distance_btwn_points[-1]
          prev_x=wpose.position.x
@@ -182,14 +201,15 @@ class PlannerInterface(object):
         wpose.orientation.z= 0
         wpose.orientation.w= 0.966
         waypoints.append(copy.deepcopy(wpose))
-        extru.append(0) #to stop extrusion at the end
         
         way.close()
+
         bar.finish()
         traveling_distance=round( traveling_distance / 2.1874 , 2) #ratio filament diameter 1.75mm / nozzle 0.8mm
         a,b=divmod(traveling_distance,1000)
         print "Trajectory points found: %d" %(len(waypoints)-1)
         print "Necessary Filament: %2dm %3dmm"%(a,b*100)
+
         return waypoints, distance_btwn_points
         
 
@@ -219,7 +239,7 @@ class PlannerInterface(object):
         tries=0
         max_tries=5  #maximum tries allowed
         eef_step=1.0 #eef_step at 1.0 considering gcode is already an interpolation
-        velocity=0.1 #velocity scaling factor applied to max velocity
+        velocity=1.0 #velocity scaling factor applied to max velocity
         
         print "\n --- Computing parameters ---"
         print "| Max tries authorized : %2d \n| Eef step : %.4f \n| Velocity : %3d %%" %(max_tries,eef_step,velocity*100)
@@ -258,6 +278,7 @@ class PlannerInterface(object):
         print "\n==>  tries: %d complete: %d %%  in: %.2f sec" %(tries, best_frac*100,c_time)#print process results
         if(best_frac<1.0):
             print "In most cases if the service doesnt compute 100% of the trajectory it is due to unreachable points or orientation"
+            print "The problem is occuring at line (approx) : %d"%(round(fraction*len(waypoints)))
         
         #-- Scaling speeds for Niryo One
         if(velocity<1.0):
@@ -315,33 +336,38 @@ while(not(quit)):
  else:
   cartesian_plan, end_joints = Instance.plan_cartesian_path(way,n.get_joints())
   a=raw_input(cyellow+"Execute trajectory ? (yes/print/no/quit) "+cend)
-  if(a=='yes' or a=='print'):
-   if(a=='print'):
+
+  if(a=='print'):
      com=serial.Serial('/dev/ttyACM0',115200)
-     time.sleep(1)#
-     m=0
-     temp_goal=200
-     com.write('x252')#heating order
-     while(m <= temp_goal):
-         com.write('x250') 
-         m=float(com.readline()[:-2]) #all except \r\n
-         sys.stdout.write("\rHotend Temperature : %.1fdegC (goal:%.1f)"%(m,temp_goal))
-         sys.stdout.flush()
-         time.sleep(2)
-     raw_input("\nTemperature reached, press enter to continue..")
+     time.sleep(1) #time to safely start serial communication
+
+     watchdog_temperature(200) #- Start watchdog to reach temperature
+
+     job=Process(target=time_bar, args=(cartesian_plan.joint_trajectory.points[-1].time_from_start.secs,)) #Multiprocessing to approx real-time control the extrusion and visual effect
+     job2=Process(target=Instance.timing_extrusion, args=(distance_btwn_points, cartesian_plan.joint_trajectory,))
+     job.start()
+     job2.start()
+     Instance.execute_plan(cartesian_plan)
+
+     com.write('x251') #stop extrusion
+     time.sleep(0.5)
+     os.kill(int(job.pid), signal.SIGKILL) #kill process by the hard method (terminate and join doesnt work)
+     os.kill(int(job2.pid), signal.SIGKILL) #kill process by the hard method (terminate and join doesnt work)
+     
+     watchdog_temperature(75) #- Watchdog for security
+     
+     quit=True
+
+  if(a=='yes'):
    job=Process(target=time_bar, args=(cartesian_plan.joint_trajectory.points[-1].time_from_start.secs,)) #Multiprocessing to approx real-time control the extrusion and visual effect
-   job2=Process(target=Instance.timing_extrusion, args=(distance_btwn_points, cartesian_plan.joint_trajectory,))
    job.start()
-   job2.start()
    Instance.execute_plan(cartesian_plan)
-   com.write('x251')
-   com.write('x252')
    os.kill(int(job.pid), signal.SIGKILL) #kill process by the hard method (terminate and join doesnt work)
-   os.kill(int(job2.pid), signal.SIGKILL) #kill process by the hard method (terminate and join doesnt work)
    quit=True
+
   if(a=='quit'):
    quit=True
-  
+ 
 
 
 print("\n"+cgreen+"\t\t --- Program end --- "+cend+"\n")
