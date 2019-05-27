@@ -12,7 +12,7 @@ from multiprocessing import Process
 import signal
 import moveit_commander
 import time
-from math import pi, sqrt, pow
+from math import pi, sqrt, pow, ceil
 from tf.transformations import quaternion_from_euler, quaternion_multiply,quaternion_conjugate
 from niryo_one_python_api.niryo_one_api import *
 #Messages
@@ -37,7 +37,6 @@ cyellow='\033[1;93m'
 cblue='\033[1;94m'
 
 #Global variables
-distance_offset= 14 #desired normal distance from surface described in file in mm
 dir=os.getcwd()+"/Trajectories"
 files=os.listdir(dir)
 
@@ -70,18 +69,29 @@ def qv_mult2(v1, q1): # This function rotate a vector v1 by a quaternion q1
 def watchdog_temperature(goal):
  print "\nStarting temperature watchdog"
  m=9999
- com.write('x252') #enable/disable heating
+ com.write('x2502') #enable/disable heating
+ time.sleep(0.1)
+ com.readline()
  while(not(goal-2<m<goal+2)):
-  try:
-    com.write('x250') 
+    com.write('x2500')
+    com.readline()
     m=float(com.readline()[:-2]) #all except \r\n
     sys.stdout.write("\rHotend Temperature : %.1fdegC (goal:%.1f)"%(m,goal))
     sys.stdout.flush()
     time.sleep(2)
-  except KeyboardInterrupt:
-    print ' -> Stopped by Ctrl+C'
-    break
  raw_input("\nTemperature reached, press enter to continue..")
+
+def check_trajectory(cartesian_plan):
+   error=0
+   for i in range(0,len(cartesian_plan.joint_trajectory.points)-1):
+       t=cartesian_plan.joint_trajectory.points[i].time_from_start.secs + cartesian_plan.joint_trajectory.points[i].time_from_start.nsecs * pow(10,-9)
+       t1=cartesian_plan.joint_trajectory.points[i+1].time_from_start.secs + cartesian_plan.joint_trajectory.points[i+1].time_from_start.nsecs * pow(10,-9)
+       if(t1<=t):
+           cartesian_plan.joint_trajectory.points[i+1].time_from_start.nsecs +=1 #to avoid not increasing time error
+           error+=1
+   print "-Time not increasing- errors fixed : %d"%(error)
+
+   
 
 class PlannerInterface(object):
   
@@ -99,6 +109,7 @@ class PlannerInterface(object):
 
     print("Arm Moveit Commander has been started")
     self.move_group = move_group
+
     
   def create_path(self,scale=1): #This function is used to build a list of waypoints 
         
@@ -126,7 +137,7 @@ class PlannerInterface(object):
             return None,None
 
         os.system('clear')
-        print(cgreen+"\n\t   >  - -    Demonstrateur Niryo One - Surmoul 3D    - -  <   \n"+cend)
+        print(cgreen+"\n\t   >  - -     Niryo One - Surmoul 3D    - -  <   \n"+cend)
         print("\n-> file : "+'\033[4m'+filename+cend)
         line=way.readline()
         type=line.startswith('gcode') #Detect if file comes from gcode (true/false)
@@ -143,7 +154,8 @@ class PlannerInterface(object):
           return None,None
         way.seek(0)
         if(type):
-         line=way.readline()#skip first line
+            print "File is a gcode"
+            line=way.readline()#skip first line
         if(filename=='interactive.txt'):
             debug=True
             nbr=int(raw_input('Nbr of lines to read : '))
@@ -180,8 +192,8 @@ class PlannerInterface(object):
           wpose.orientation.y= q3[2]
           wpose.orientation.z= q3[3]
 
-          fac=distance_offset
-          d=quaternion_multiply([fac,0,0,0], q3)
+          fac=15
+          d=quaternion_multiply([fac,0,0,0], q3 )
           wpose.position.x= float(tab[0]) + offsets_niryo[0] + d[1]/1000 #- Position
           wpose.position.y= float(tab[1]) + offsets_niryo[1] + d[2]/1000
           wpose.position.z= float(tab[2]) + offsets_niryo[2] + d[3]/1000
@@ -201,6 +213,7 @@ class PlannerInterface(object):
         wpose.orientation.z= 0
         wpose.orientation.w= 0.966
         waypoints.append(copy.deepcopy(wpose))
+        distance_btwn_points.append(0)
         
         way.close()
 
@@ -237,9 +250,9 @@ class PlannerInterface(object):
         #-- Parameters
         fraction=0.0
         tries=0
-        max_tries=5  #maximum tries allowed
+        max_tries=3  #maximum tries allowed
         eef_step=1.0 #eef_step at 1.0 considering gcode is already an interpolation
-        velocity=1.0 #velocity scaling factor applied to max velocity
+        velocity=0.25 #velocity scaling factor applied to max velocity
         
         print "\n --- Computing parameters ---"
         print "| Max tries authorized : %2d \n| Eef step : %.4f \n| Velocity : %3d %%" %(max_tries,eef_step,velocity*100)
@@ -290,7 +303,7 @@ class PlannerInterface(object):
         print "\nExpected printing time : %dh%02dm%02ds" %(expect_h,expect_m,expect_s)
         end_joints=list(best_plan.joint_trajectory.points[-1].positions)# returns last joint position in case of using multiple trajectories that are following each other
         
-        return best_plan , end_joints
+        return best_plan , end_joints , best_frac
 
   def execute_plan(self, plan): #This function is used to execute the trajectory
     move_group = self.move_group
@@ -303,9 +316,9 @@ class PlannerInterface(object):
     h,m=divmod(m,60)
     print "Elapsed : %dh%02dm%02ds" %(h,m,s)
     
-  def timing_extrusion(self, distance_btwn_points, traj): #This function times the extrusion, aiming to be a real-time function
+  def timing_extrusion(self, traj): #This function times the extrusion, aiming to be a real-time function
     tref=time.time()
-    com.write('x251')#extrusion order
+    a=True;
     for i in range(0,len(traj.points)-1):
      t_next= traj.points[i].time_from_start.secs + traj.points[i].time_from_start.nsecs * pow(10,-9)
      t=tref + t_next
@@ -314,9 +327,9 @@ class PlannerInterface(object):
       time.sleep(traj.points[i].time_from_start.secs - traj.points[i-1].time_from_start.secs - 0.5) #sleep to reduce CPU usage when high duration between points
      while( time.time() < (t)): #void loop to wait for the right time
       pass
-    if(i>=1): 
-     com.write('x'+str(distance_btwn_points[i+1]/dt*1000)) #mm/s
-
+     n.digital_write(GPIO_1C,a) #send change signal on gpio interrupt
+     a=not(a)
+     
     
    
 #------------------------------------------------------------
@@ -328,34 +341,63 @@ quit=False
 
 while(not(quit)):
  os.system('clear')
- print(cgreen+"\n\t   >  - -    Demonstrateur Niryo One - Surmoul 3D    - -  <   \n"+cend)
+ print(cgreen+"\n\t   >  - -     Niryo One - Surmoul 3D    - -  <   \n"+cend)
  way, distance_btwn_points = Instance.create_path()
 # -------------
  if(way==None): #Error while creating path
      raw_input()
  else:
-  cartesian_plan, end_joints = Instance.plan_cartesian_path(way,n.get_joints())
+  
+  cartesian_plan, end_joints ,frac = Instance.plan_cartesian_path(way,n.get_joints())
+  if(frac!=1.0):
+     a=raw_input(cyellow+"Skip singularities ?(y/n)"+cend)
+     if(a=='y'): #-Skip unreachable points
+         avoided=0
+         total_trajectory=len(way)
+         while(frac!=1.0 and avoided<0.15*total_trajectory): #need 100% of the trajectory or <15% of the total trajectory avoided
+             os.system('clear')
+             print(cgreen+"\n\t   >  - -     Niryo One - Surmoul 3D    - -  <   \n"+cend)
+             i=int(ceil(frac*len(way))) #get last point to calculate: frac represents the already calculated path and ceil rounds the number up so we get the next point that caused the problem
+             del way[i]
+             distance_btwn_points[i+1]+=distance_btwn_points[i] #updating distance_btwn_points in case we need to print
+             del distance_btwn_points[i]
+             avoided+=1
+             cartesian_plan, end_joints ,frac = Instance.plan_cartesian_path(way,n.get_joints())
+         print "\nPoints avoided to satisfy trajectory %d on %d (%2f %%)"%(avoided,len(way)+avoided,avoided*100/(total_trajectory))
+  
+  check_trajectory(cartesian_plan)
   a=raw_input(cyellow+"Execute trajectory ? (yes/print/no/quit) "+cend)
 
   if(a=='print'):
-     com=serial.Serial('/dev/ttyACM0',115200)
-     time.sleep(1) #time to safely start serial communication
+     n.pin_mode(GPIO_1C,PIN_MODE_OUTPUT)
+     com=serial.Serial('/dev/ttyACM0',57600)
+     time.sleep(1) #delay to safely start serial communication
+     com.reset_input_buffer() #emptying previous data transfers
+     com.reset_output_buffer()
+     print "Arduino: ", com.readline()
 
-     watchdog_temperature(200) #- Start watchdog to reach temperature
-
-     job=Process(target=time_bar, args=(cartesian_plan.joint_trajectory.points[-1].time_from_start.secs,)) #Multiprocessing to approx real-time control the extrusion and visual effect
-     job2=Process(target=Instance.timing_extrusion, args=(distance_btwn_points, cartesian_plan.joint_trajectory,))
+     com.write('x'+str(len(cartesian_plan.joint_trajectory.points)-1)) #Send number of orders
+     for i in range(0,len(cartesian_plan.joint_trajectory.points)-1): 
+        t_next= cartesian_plan.joint_trajectory.points[i].time_from_start.secs + cartesian_plan.joint_trajectory.points[i].time_from_start.nsecs * pow(10,-9)
+        dt= cartesian_plan.joint_trajectory.points[i+1].time_from_start.secs + cartesian_plan.joint_trajectory.points[i+1].time_from_start.nsecs * pow(10,-9) - t_next
+        com.write('x'+str(int(distance_btwn_points[i]/dt*1000)) )
+        time.sleep(0.05)
+     print "sending finished"
+     print "Arduino: ", com.readline()
+     
+     raw_input("wait for heating")
+     job=Process( target=time_bar, args=(cartesian_plan.joint_trajectory.points[-1].time_from_start.secs,) ) #Multiprocessing to approx real-time control the extrusion and visual effect
+     job2=Process( target=Instance.timing_extrusion, args=(cartesian_plan.joint_trajectory,) )
+     time.sleep(1)
      job.start()
      job2.start()
      Instance.execute_plan(cartesian_plan)
 
-     com.write('x251') #stop extrusion
      time.sleep(0.5)
      os.kill(int(job.pid), signal.SIGKILL) #kill process by the hard method (terminate and join doesnt work)
      os.kill(int(job2.pid), signal.SIGKILL) #kill process by the hard method (terminate and join doesnt work)
      
-     watchdog_temperature(75) #- Watchdog for security
-     
+     com.close()
      quit=True
 
   if(a=='yes'):
