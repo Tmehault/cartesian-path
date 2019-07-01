@@ -91,6 +91,8 @@ void setup()
   //-----------------------------------
 
   Serial.println("arduino prete");
+
+  
 }
 
 // x4x4x0001x8x7593x10x22063x20x105492    x55x55555
@@ -110,12 +112,7 @@ void loop()
       temp = analogRead(thermistor);
       Input = temp;
       tempPID.Compute();
-      /*if(currentMillis-t_print_temp >= 1000)//publish temperature rate : 1 sec
-        {
-        t_print_temp=currentMillis;
-        Serial.println(rtodeg(temp));
-        }*/
-      if (Output == 0)
+      if (Output == 0 and temp > 45) //resistance=45 is equivalent to 250deg lower values is too hot (security)
       {
         digitalWrite(heat, HIGH);
       }
@@ -247,6 +244,7 @@ void Outils_commandes()
       //Serial.println(val_extrusion[i]);
     }
     Serial.println("Acquisition terminee");
+    indice=0;
   }
   if(commande==7) //extrusion a vitesse donnee
   {

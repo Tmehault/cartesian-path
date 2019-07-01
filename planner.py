@@ -58,32 +58,46 @@ def time_bar(duration): #This function is only updating a loading bar while prin
  state.finish()
 
 
-def check_trajectory(cartesian_plan, frac, way, distance_btwn_points):
+def check_trajectory(cartesian_plan, end_joints, frac, way, distance_btwn_points):
    print("-> Auto-check trajectory module")
+   error_time=0
+   error_way=0
    if(frac!=1.0):
      a=raw_input(cyellow+"Avoid singularities ?(y/n)"+cend)
+     temp_way=copy.deepcopy(way)
+     for i in range (0,len(way)-1): #- delete duplicated points in the path
+         if(way[i]==way[i+1]):
+             del temp_way[i-error_way]
+             error_way +=1
+     way=copy.deepcopy(temp_way)
      if(a=='y'): #-Skip unreachable points
          avoided=0
          total_trajectory=len(way)
-         while(frac<0.4 and avoided<0.15*total_trajectory): #need 100% of the trajectory or <15% of the total trajectory avoided
+         while(frac<1.0 and avoided<0.15*total_trajectory): #need 100% of the trajectory or <15% of the total trajectory avoided
              os.system('clear')
              print(cgreen+"\n\t   >  - -     Niryo One - Surmoul 3D    - -  <   \n"+cend)
              print "\nPoints avoided: %d\n"%(avoided)
              i=int(ceil(frac*len(way))) #get last point to calculate: frac represents the already calculated path and ceil rounds the number up so we get the next point that caused the problem
              del way[i]
-             distance_btwn_points[i+1]+=distance_btwn_points[i] #updating distance_btwn_points in case we need to print
+             distance_btwn_points[i+1]+=distance_btwn_points[i] #-updating distance_btwn_points
              del distance_btwn_points[i]
              avoided+=1
-             cartesian_plan, end_joints ,frac = Instance.plan_cartesian_path(1,way,n.get_joints())
+             b_cartesian_plan, b_end_joints ,frac = Instance.plan_cartesian_path(1,way,end_joints)
+         cartesian_plan=b_cartesian_plan
+         end_joints=b_end_joints
          print "\nPoints avoided to satisfy trajectory %d on %d (%.1f %%)"%(avoided,total_trajectory, avoided*100/(total_trajectory))
-   error=0
+   
    for i in range(0,len(cartesian_plan.joint_trajectory.points)-1):
        t=cartesian_plan.joint_trajectory.points[i].time_from_start.secs + cartesian_plan.joint_trajectory.points[i].time_from_start.nsecs * pow(10,-9)
        t1=cartesian_plan.joint_trajectory.points[i+1].time_from_start.secs + cartesian_plan.joint_trajectory.points[i+1].time_from_start.nsecs * pow(10,-9)
        if(t1<=t):
-           cartesian_plan.joint_trajectory.points[i+1].time_from_start.nsecs +=1 #to avoid not increasing time error
-           error+=1
-   print "-Time not increasing- errors fixed : %d"%(error)
+           cartesian_plan.joint_trajectory.points[i].time_from_start.nsecs +=1 #- to avoid time not increasing error
+           error_time+=1
+   
+   print "-Time not increasing- errors fixed : %d"%(error_time)
+   print "-Duplicated points on path- errors fixed : %d"%(error_way)
+
+   return(cartesian_plan, end_joints, frac, distance_btwn_points)
 
 #----------------------------
 #------- OUTILS Arduino------
@@ -99,7 +113,9 @@ def check_trajectory(cartesian_plan, frac, way, distance_btwn_points):
     t8-stop extrusion
     t9-stop chauffe
   
-  '''   
+  '''  
+  
+
 class Arduino():
     n.pin_mode(GPIO_1B,PIN_MODE_OUTPUT)
     n.pin_mode(GPIO_1C,PIN_MODE_OUTPUT)
@@ -137,12 +153,16 @@ class Arduino():
 
     def extrusion_tab(self,tab,distance_btwn_points):
         self.send('t6')
-        coeff_extru=0.5
+        coeff_extru=0.25
+        max_speed=8
         self.com.write('x'+str(len(tab)-1)) #Send number of orders
         for i in range(0,len(tab)-1): #Send orders
            t_next= tab[i].time_from_start.secs + tab[i].time_from_start.nsecs * pow(10,-9)
            dt= tab[i+1].time_from_start.secs + tab[i+1].time_from_start.nsecs * pow(10,-9) - t_next
-           self.com.write('x'+str(int(distance_btwn_points[i]*coeff_extru/dt*1000)) ) #Send necessary speed
+           speed=int(distance_btwn_points[i]*coeff_extru/dt*1000)
+           if(speed>max_speed): #extrusion limit
+               speed=max_speed
+           self.com.write('x'+str(speed) ) #Send necessary speed
            time.sleep(0.001) #delay to be sure there is no loss while transferring via serial connection
         print "Sending finished"
         print self.com.readline()
@@ -175,7 +195,7 @@ class PlannerInterface(object):
     self.move_group = move_group
 
     
-  def create_path(self,scale=1): #This function is used to build a list of waypoints 
+  def create_path(self): #This function is used to build a list of waypoints 
         
         move_group = self.move_group
 
@@ -239,7 +259,7 @@ class PlannerInterface(object):
          wpose.orientation.y= q1[2]
          wpose.orientation.z= q1[3]
 
-         wpose.position.x= float(tab[0]) + offsets_niryo[0]  #- Position
+         wpose.position.x= float(tab[0]) + offsets_niryo[0]  #- Position #
          wpose.position.y= float(tab[1]) + offsets_niryo[1] 
          wpose.position.z= float(tab[2]) + offsets_niryo[2] 
          
@@ -250,8 +270,8 @@ class PlannerInterface(object):
          prev_z=wpose.position.z
          waypoints.append(copy.deepcopy(wpose))
          
-        #-- Outing trajectory---------------
-        if(not(debug)):
+         #-- Outing trajectory---------------
+         if(divmod(i,2950)[1]==0 or i==nbr-1):  #the trajectory is splitted by 2950 points, robot goes to a specific pose where he can wait then will execute next part of trajectory
             wpose.position.x += -0.07
             wpose.position.z+=0.05
             wpose.orientation.x= 0 #- Quaternion 
@@ -263,17 +283,19 @@ class PlannerInterface(object):
         
         way.close()
         bar.finish()
-        distance_btwn_points[0]=0.005 #5mm to empty and fill nozzle
+        for i in range(0,len(distance_btwn_points)):
+            if(divmod(i,2950)[1]==0):
+                distance_btwn_points[i]=0.005 #5mm to empty and fill nozzle
 
         traveling_distance=round( traveling_distance / 2.1874 , 2) #ratio filament diameter 1.75mm / nozzle 0.8mm
         a,b=divmod(traveling_distance,1000)
         print "Trajectory points found: %d" %(len(waypoints)-1)
-        print "Necessary Filament: %2dm %3dmm"%(a,b*100)
+        print "Approx. Necessary Filament: %2dm %3dmm"%(a,b*100)
 
         return waypoints, distance_btwn_points
         
 
-  def plan_cartesian_path(self, max_tries, waypoints, start_joints): #This function is used to plan the path (calculating accelerations,velocities,positions etc..)
+  def plan_cartesian_path(self, max_tries, waypoints, start_joints): # Call the planner
 
         move_group = self.move_group
         
@@ -344,15 +366,16 @@ class PlannerInterface(object):
         if(velocity<1.0 and best_frac==1.0):
          print"==>  Retiming trajectory at %3d%% speed.."%(velocity*100)
          best_plan=move_group.retime_trajectory(initial_state, best_plan, velocity) #ref_state_in, plan, velocity sc
-        
-        expect_m, expect_s = divmod( best_plan.joint_trajectory.points[-1].time_from_start.secs , 60)
-        expect_h, expect_m = divmod( expect_m  , 60)
-        print "\nExpected printing time : %dh%02dm%02ds" %(expect_h,expect_m,expect_s)
-        end_joints=list(best_plan.joint_trajectory.points[-1].positions)# returns last joint position in case of using multiple trajectories that are following each other
-        
-        return best_plan , end_joints , best_frac
+        if(best_frac==0):
+            return 0, tab_joints, best_frac # this returns a 0 for empty trajectory, the original start joints and best frac which value is 0
+        else:
+            expect_m, expect_s = divmod( best_plan.joint_trajectory.points[-1].time_from_start.secs , 60)
+            expect_h, expect_m = divmod( expect_m  , 60)
+            print "\nExpected printing time : %dh%02dm%02ds" %(expect_h,expect_m,expect_s)
+            end_joints=list(best_plan.joint_trajectory.points[-1].positions)# returns last joint position in case of using multiple trajectories that are following each other
+            return best_plan , end_joints , best_frac
 
-  def execute_plan(self, plan): #This function execute the trajectory
+  def execute_plan(self, plan): # execute the trajectory
     move_group = self.move_group
     t_in=time.time()
     print "Started at : ", time.asctime(time.localtime(t_in))
@@ -363,13 +386,13 @@ class PlannerInterface(object):
     h,m=divmod(m,60)
     print "Elapsed : %dh%02dm%02ds" %(h,m,s)
     
-  def timing_extrusion(self, traj): #This function times the extrusion, aiming to be a real-time function
+  def timing_extrusion(self, traj): # times the extrusion, aiming to be a real-time function
     tref=time.time()
     a=True;
     for i in range(0,len(traj.points)-1):
      t_next= traj.points[i].time_from_start.secs + traj.points[i].time_from_start.nsecs * pow(10,-9)
      t=tref + t_next
-     dt= traj.points[i+1].time_from_start.secs + traj.points[i+1].time_from_start.nsecs * pow(10,-9) - t_next
+     #dt= traj.points[i+1].time_from_start.secs + traj.points[i+1].time_from_start.nsecs * pow(10,-9) - t_next
      if(traj.points[i].time_from_start.secs - traj.points[i-1].time_from_start.secs > 1):
       time.sleep(traj.points[i].time_from_start.secs - traj.points[i-1].time_from_start.secs - 0.5) #sleep to reduce CPU usage when high duration between points
      while( time.time() < (t)): #void loop to wait for the right time
@@ -391,66 +414,89 @@ Instance = PlannerInterface()
 quit=False
 
 while(not(quit)):
+
  os.system('clear')
  print(cgreen+"\n\t   >  - -     Niryo One - Surmoul 3D    - -  <   \n"+cend)
  print("\n\t1 - Trajectory execution\n\t2 - Tools\n\t0- Quit")
  choix=int(raw_input("\nChoice ? "))
- if(choix==0):
+
+ if(choix==0):                  #-----------------------------------------
      quit=True
- if (choix==1) :
+
+ if (choix==1) :                #-----------------------------------------
      way, distance_btwn_points = Instance.create_path()
      # -------------
      if(way==None): #Error while creating path
           raw_input()
      else:
        
-       cartesian_plan, end_joints ,frac = Instance.plan_cartesian_path(3, way,n.get_joints())  
-       check_trajectory(cartesian_plan, frac, way, distance_btwn_points)
+       #Store divided path in tabs if needed
+       way_parts= divmod(len(distance_btwn_points), 2950)[0]+1
+       tab_way=[]
+       tab_distance_btwn_points=[]
+       for i in range(0, way_parts): #divide path
+           tab_way.append( copy.deepcopy( way [i*2950 : (i+1)*2950]))
+           tab_distance_btwn_points.append( copy.deepcopy( distance_btwn_points[ i*2950 : (i+1)*2950 ] ) )
+       print "Path has been divided in %d paths"%(way_parts)
+       end_joints=n.get_joints()
+       tab_cartesian_plan=[0]*way_parts
+       for i in range(0,way_parts): #compute paths
+           print "Computing trajectory %d on %d"%(i,way_parts)
+           tab_cartesian_plan[i], calctd_end_joints, frac = Instance.plan_cartesian_path( 3, tab_way[i], end_joints )  
+           tab_cartesian_plan[i], end_joints, frac, tab_distance_btwn_points[i] = check_trajectory( tab_cartesian_plan[i], end_joints,frac, tab_way[i], tab_distance_btwn_points[i])
        a=raw_input(cyellow+"Execute trajectory ? (yes/print/no/quit) "+cend)
-     
-       if(a=='print'):
+       
+       if(a=='print'):               #-----------------------------------------
           
           arduino=Arduino()
-          arduino.extrusion_tab(cartesian_plan.joint_trajectory.points,distance_btwn_points)
-          raw_input("Wait then press enter")
-          job=Process( target=time_bar, args=(cartesian_plan.joint_trajectory.points[-1].time_from_start.secs,) ) #Multiprocessing to approx real-time control the extrusion and visual effect
-          job2=Process( target=Instance.timing_extrusion, args=(cartesian_plan.joint_trajectory,) )
-          time.sleep(1)
+
+          execution_time=0
+          for i in range(0,way_parts): #calculate complete execution time
+           execution_time += tab_cartesian_plan[i].joint_trajectory.points[-1].time_from_start.secs
+          job=Process(target=time_bar, args=( execution_time ,)) #Multiprocessing to approx real-time control the extrusion and visual effect
           job.start()
-          job2.start()
-          Instance.execute_plan(cartesian_plan)
-     
-          time.sleep(0.5)
-          os.kill(int(job.pid), signal.SIGKILL) #kill process by the hard method (terminate and join doesnt work)
-          os.kill(int(job2.pid), signal.SIGKILL) #kill process by the hard method (terminate and join doesnt work)
-          
-          arduino.stop_extrusion()
+          for i in range(0, way_parts): #executing paths one by one
+            print "executing trajectory %d on %d"%(i+1, way_parts)
+            arduino.extrusion_tab(tab_cartesian_plan[i].joint_trajectory.points, tab_distance_btwn_points[i])
+            job2=Process( target=Instance.timing_extrusion, args=(tab_cartesian_plan[i].joint_trajectory,) )
+            time.sleep(0.5)
+            job2.start()
+            Instance.execute_plan(tab_cartesian_plan[i])
+            time.sleep(0.5)
+            os.kill(int(job2.pid), signal.SIGKILL) #kill process by the hard method (terminate and join doesnt work)
+          os.kill(int(job.pid), signal.SIGKILL) #this process is out of the loop to prevent him to restart (execute until the end)
+          arduino.stop_extrusion() #stop everything for security
           arduino.stop_heating()
           quit=True
      
-       if(a=='yes'):
-        job=Process(target=time_bar, args=(cartesian_plan.joint_trajectory.points[-1].time_from_start.secs,)) #Multiprocessing to approx real-time control the extrusion and visual effect
+       if(a=='yes'):        #-----------------------------------------
+        execution_time=0
+        for i in range(0,way_parts):
+           execution_time += tab_cartesian_plan[i].joint_trajectory.points[-1].time_from_start.secs
+        job=Process(target=time_bar, args=( execution_time ,)) #Multiprocessing to approx real-time control the extrusion and visual effect
         job.start()
-        Instance.execute_plan(cartesian_plan)
+        for i in range(0, way_parts):
+            print "executing trajectory %d on %d"%(i+1, way_parts)
+            Instance.execute_plan(tab_cartesian_plan[i])
         os.kill(int(job.pid), signal.SIGKILL) #kill process by the hard method (terminate and join doesnt work)
         quit=True
        if(a=='quit'):
         quit=True
 
- if(choix==2):
+ if(choix==2):              #-----------------------------------------
    arduino=Arduino()
    quit_tools=False
    while not(quit_tools):
-       print('''\n\t1-chauffe
-           t2-maj objectif temperature
-           t3-affiche temperature
-           t4-chargement materiau
-           t5-déchargement materiau
-           t6-remplir tableau d extrusion (indisponible)
-           t7-extrusion vitesse donnee
-           t8-stop extrusion
-           t9-stop chauffe
-           t10-empty buffers
+       print('''\n1-Heat
+           2-Update temperature objective
+           3-Print temperature
+           4-Load filament
+           5-Unload filament
+           6-Fill extrusion tab (unavailable)
+           7-Extrude at constant speed
+           8-Stop extrusion
+           9-Stop heat
+           10-Empty buffers
            0--Quit
             ''')
        action=int(raw_input("Action ? "))
