@@ -2,9 +2,9 @@
 
 #include <PID_v1.h>//library for PID
 //PINS
-byte directionPin = 28;
-byte stepPin = 26;
-byte enablePin = 24;
+const byte directionPin = 28;
+const byte stepPin = 26;
+const byte enablePin = 24;
 #define thermistor A13
 #define heat 10
 const byte interruptpin = 2;
@@ -20,6 +20,7 @@ uint16_t freq_heat = 200;//milliseconds
 volatile uint16_t freq_extrusion = 20000;//in microseconds
 bool direction_extrudeur = HIGH;
 bool outils = false;
+bool extru = false;
 
 //VAR
 unsigned long prev_extr_micros = 0;
@@ -27,8 +28,7 @@ unsigned long previousMillis = 0;
 unsigned long currentMillis = 0;
 unsigned long currentMicros = 0;
 unsigned long t_print_temp = 0;
-unsigned long start_time = 0;
-uint16_t val_extrusion[3000];
+int8_t val_extrusion[6000];
 bool i_extrusion = false;
 bool i_heat = false;
 volatile uint16_t indice = 0;
@@ -89,8 +89,11 @@ void setup()
   //-----------------------------------
   //  | Get data  |
   //-----------------------------------
-
-  Serial.println("arduino prete");
+  for(int i=0; i<6000;i++)
+  {
+    val_extrusion[i]=0;
+  }
+  //Serial.println("arduino prete");
 
   
 }
@@ -112,7 +115,7 @@ void loop()
       temp = analogRead(thermistor);
       Input = temp;
       tempPID.Compute();
-      if (Output == 0 and temp > 45) //resistance=45 is equivalent to 250deg lower values is too hot (security)
+      if (Output == 0 and temp > 45) //resistance=45 is equivalent to 250deg lower values nozzle is too hot (security)
       {
         digitalWrite(heat, HIGH);
       }
@@ -142,20 +145,50 @@ void loop()
   {
     Outils_commandes();
   }
+  if(extru)
+  {
+    if(val_extrusion[indice] < 0)
+    {
+      direction_extrudeur = LOW;
+      for(int i=0;i<500;i++) // steps backward
+      {
+        digitalWrite(stepPin,HIGH); // Output high
+        delayMicroseconds(1); // minimal Wait (resolution is 4 microseconds)
+        digitalWrite(stepPin,LOW); // Output low
+        delayMicroseconds(50);
+      }
+    }
+    else
+    {
+      direction_extrudeur = HIGH;
+      if(val_extrusion[indice] == 0 ) 
+      {
+        freq_extrusion=20000;
+      }
+      else
+      {
+        freq_extrusion = round( 1 / (( val_extrusion[indice] + 1 ) * pow(10, -2) / (8.16)) );
+      }
+      //Serial.println(freq_extrusion);
+      i_extrusion=true;
+    }
+    indice = indice + 1;
+    extru=false;
+  }
 }
 
 //------------------INTERRUPTIONS-------------
 
 void ISR_extru()
 {
-  freq_extrusion = round( 1 / ((val_extrusion[indice] + 1) * pow(10, -2) / (8.16)) );
-  i_extrusion=true;
-  indice = indice + 1;
+  extru = true;
 }
 void Interrupt_outils()
 {
   outils = true;
 }
+
+
 
 //------------------COMMANDES OUTILS----------------
 
@@ -177,14 +210,14 @@ void Outils_commandes()
   {
     //empty
   }*/
-  Serial.read();
-  int commande = Serial.parseInt();
+  int commande = 0;
+  if(Serial.read() - '0' != 116)
+  {
+    commande = Serial.parseInt();
+    //Serial.println("found t");
+  }
   //Serial.println(commande);
   
-  if(commande==0)
-  {
-    Serial.println("test");
-  }
   if(commande==1)  //chauffe
   {
     Serial.println("Chauffe");
@@ -236,7 +269,8 @@ void Outils_commandes()
       //empty
     }
     //here we should have received first x
-    int i_max = Serial.parseInt(); //number of data to receive
+    uint16_t i_max = Serial.parseInt(); //number of data to receive
+    //Serial.println(i_max);
     for (int i = 0; i < i_max; i++) //we are blocking the loop to get our values 'x250x51x65x61x23'
     {
       while (Serial.read() - '0' != 72) {} //wait data and skip the x

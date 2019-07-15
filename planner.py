@@ -26,7 +26,7 @@ from geometry_msgs.msg import Pose
 
 n = NiryoOne()
 
-offsets_niryo = [0,0,0] #offsets for 2D+ printing (gcode origin: 0,0,0)
+offsets_niryo = [0.20,-0.1,0.0275] #offsets for 2D+ printing (gcode origin: 0,0,0)
 
 #Colors to enhance HMI
 cplanner = '\033[1;104m'
@@ -58,15 +58,10 @@ def time_bar(duration): #This function is updating a loading bar while printing 
 def check_trajectory(cartesian_plan, end_joints, frac, way, distance_btwn_points):
    print("-> Auto-check trajectory module")
    error_time = 0
-   error_way = 0
+   
    if(frac != 1.0):
      a = raw_input(cyellow + "Delete singularities ?(y/n)" + cend)
-     temp_way = copy.deepcopy(way)
-     for i in range(0,len(way) - 1): #- delete duplicated points in the path
-         if(way[i] == way[i + 1]):
-             del temp_way[i - error_way]
-             error_way +=1
-     way = copy.deepcopy(temp_way)
+     
      if(a == 'y'): #-Skip unreachable points
          avoided = 0
          total_trajectory = len(way)
@@ -89,11 +84,17 @@ def check_trajectory(cartesian_plan, end_joints, frac, way, distance_btwn_points
        t = cartesian_plan.joint_trajectory.points[i].time_from_start.secs + cartesian_plan.joint_trajectory.points[i].time_from_start.nsecs * pow(10,-9)
        t1 = cartesian_plan.joint_trajectory.points[i + 1].time_from_start.secs + cartesian_plan.joint_trajectory.points[i + 1].time_from_start.nsecs * pow(10,-9)
        if(t1 <= t):
-           cartesian_plan.joint_trajectory.points[i].time_from_start.nsecs +=1 #- to avoid time not increasing error
+           cartesian_plan.joint_trajectory.points[i+1].time_from_start.nsecs +=1 #- to avoid time not increasing error
            error_time+=1
-   
+           print "error occuring at : "+str(t)
+
    print "-Time not increasing- errors fixed : %d" % (error_time)
-   print "-Duplicated points on path- errors fixed : %d" % (error_way)
+
+   #- debug purpose only
+   traj_saved=open("traj_saved.txt",'w')
+   traj_saved.write(str(cartesian_plan))
+   traj_saved.close()
+
 
    return(cartesian_plan, end_joints, frac, distance_btwn_points)
 
@@ -128,7 +129,9 @@ class Arduino():
 
     def send(self,message):
         self.com.write(message)
-        n.digital_write(GPIO_1B,True)
+        time.sleep(0.1)
+        n.digital_write(GPIO_1B,True) #rising signal
+        time.sleep(0.1)
         print self.com.readline()
         n.digital_write(GPIO_1B,False)
 
@@ -150,16 +153,20 @@ class Arduino():
         self.send('t5')
 
     def extrusion_tab(self,tab,distance_btwn_points):
+        print "Start sending"
         self.send('t6')
-        coeff_extru = 0.25
+        coeff_extru = 0.5#0.25
+        coeff_hotend = 0.209
         max_speed = 8
         self.com.write('x' + str(len(tab) - 1)) #Send number of orders
         for i in range(0,len(tab) - 1): #Send orders
            t_next = tab[i].time_from_start.secs + tab[i].time_from_start.nsecs * pow(10,-9)
            dt = tab[i + 1].time_from_start.secs + tab[i + 1].time_from_start.nsecs * pow(10,-9) - t_next
-           speed = int(distance_btwn_points[i] * coeff_extru / dt * 1000)
+           speed = int(distance_btwn_points[i] * coeff_hotend * coeff_extru / dt * 1000)
            if(speed > max_speed): #extrusion limit
                speed = max_speed
+           if(speed < 0):
+               speed = -2
            self.com.write('x' + str(speed)) #Send necessary speed
            time.sleep(0.001) #delay to be sure there is no loss while transferring via serial connection
         print "Sending finished"
@@ -229,8 +236,10 @@ class PlannerInterface(object):
         while line:
          nbr += 1
          line = way.readline()
-         if(len(line.split(' ')) != 7 and line != ""):
+         data = len(line.split(' '))
+         if(( data != 7 and data != 8) and line != ""):
           print(cred + "Error line " + str(nbr) + " does not contain 3 positions + 4 quaternions values :" + cend)
+          print "contains %d values"%(data)
           print line
           return None,None
         way.seek(0)
@@ -263,14 +272,19 @@ class PlannerInterface(object):
          wpose.position.z = float(tab[2]) + offsets_niryo[2] 
          
          distance_btwn_points.append(sqrt(pow(wpose.position.x - prev_x,2) + pow(wpose.position.y - prev_y,2) + pow(wpose.position.z - prev_z,2)))
-         traveling_distance += distance_btwn_points[-1]
+         if(len(tab) == 8 ): # if gcode
+             if(not(int(tab[7])) and (distance_btwn_points[-1] != -2) ): # if extrusion 0 then retractation
+                 distance_btwn_points[-1] = -2 #overwrite last point with retractation in mm 
+             else:
+                 traveling_distance += distance_btwn_points[-1]
+
          prev_x = wpose.position.x
          prev_y = wpose.position.y
          prev_z = wpose.position.z
          waypoints.append(copy.deepcopy(wpose))
          
          #-- Outing trajectory---------------
-         if(divmod(i,2950)[1] == 0 or i == nbr - 1):  #the trajectory is splitted in 2950 points, robot goes to a specific pose
+         if(divmod(i,5990)[1] == 0 or i == nbr - 1):  #the trajectory is splitted in 5990 points, robot goes to a specific pose
                                                       #where he can wait then will execute next part of trajectory
             wpose.position.x += -0.07
             wpose.position.z+=0.05
@@ -284,10 +298,24 @@ class PlannerInterface(object):
         way.close()
         bar.finish()
         for i in range(0,len(distance_btwn_points)):
-            if(divmod(i,2950)[1] == 0):
+            if(divmod(i,5990)[1] == 0):
                 distance_btwn_points[i] = 0.005 #5mm to empty and fill nozzle
 
-        traveling_distance = round(traveling_distance / 2.1874 , 2) #ratio filament diameter 1.75mm / nozzle 0.8mm
+        error_way = 0
+        is_error = True
+        while(is_error):
+            temp_way = copy.deepcopy(waypoints)
+            is_error=False
+            for i in range(0,len(waypoints) - 1): #- delete duplicated points in the path
+                if(waypoints[i] == waypoints[i + 1]):
+                 del temp_way[i - error_way]
+                 error_way +=1
+                 is_error=True
+                 #print "line %d"%(i)#-debug
+            waypoints = copy.deepcopy(temp_way)
+        print "-Duplicated points on path- errors fixed : %d" % (error_way)
+
+        traveling_distance = round(traveling_distance * 0.209 , 2) # filament diameter 1.75mm / nozzle 0.8mm
         a,b = divmod(traveling_distance,1000)
         print "Trajectory points found: %d" % (len(waypoints) - 1)
         print "Approx. Necessary Filament: %2dm %3dmm" % (a,b * 100)
@@ -325,7 +353,7 @@ class PlannerInterface(object):
         tries = 0
         max_tries = max_tries  #maximum tries allowed
         eef_step = 1.0 #eef_step at 1.0 considering gcode is already an interpolation
-        velocity = 0.25 #velocity scaling factor applied to max velocity
+        velocity = 0.06 #velocity scaling factor applied to max velocity
         
         #print "\n --- Computing parameters ---"
         #print "| Max tries authorized : %2d \n| Eef step : %.4f \n| Velocity :
@@ -422,7 +450,7 @@ class PlannerInterface(object):
 #  -------- MAIN --------------------
 #------------------------------------------------------------
 os.system('clear')
-os.system('figlet  Niryo - Surmoul ')
+os.system('figlet   Mini - Surmoul ')
 Instance = PlannerInterface()
 quit = False
 
@@ -444,12 +472,12 @@ while(not(quit)):
      else:
        
        #Store divided path in tabs if needed
-       way_parts = divmod(len(distance_btwn_points), 2950)[0] + 1
+       way_parts = divmod(len(distance_btwn_points), 5990)[0] + 1
        tab_way = []
        tab_distance_btwn_points = []
        for i in range(0, way_parts): #divide path
-           tab_way.append(copy.deepcopy(way[i * 2950 : (i + 1) * 2950]))
-           tab_distance_btwn_points.append(copy.deepcopy(distance_btwn_points[i * 2950 : (i + 1) * 2950]))
+           tab_way.append(copy.deepcopy(way[i * 5990 : (i + 1) * 5990]))
+           tab_distance_btwn_points.append(copy.deepcopy(distance_btwn_points[i * 5990 : (i + 1) * 5990]))
        print "Path has been divided in %d paths" % (way_parts)
        end_joints = n.get_joints()
        tab_cartesian_plan = [0] * way_parts
@@ -467,12 +495,13 @@ while(not(quit)):
           for i in range(0,way_parts): #calculate complete execution time
            execution_time += tab_cartesian_plan[i].joint_trajectory.points[-1].time_from_start.secs
           job = Process(target=time_bar, args=(execution_time ,)) #Multiprocessing to approx real-time control the extrusion and visual effect
-          job.start()
           for i in range(0, way_parts): #executing paths one by one
             print "executing trajectory %d on %d" % (i + 1, way_parts)
             arduino.extrusion_tab(tab_cartesian_plan[i].joint_trajectory.points, tab_distance_btwn_points[i])
             job2 = Process(target=Instance.timing_extrusion, args=(tab_cartesian_plan[i].joint_trajectory,))
             time.sleep(0.5)
+            if(not(job.is_alive())):
+                job.start()
             job2.start()
             Instance.execute_plan(tab_cartesian_plan[i])
             time.sleep(0.5)
@@ -487,7 +516,7 @@ while(not(quit)):
         execution_time = 0
         for i in range(0,way_parts):
            execution_time += tab_cartesian_plan[i].joint_trajectory.points[-1].time_from_start.secs
-        job = Process(target=time_bar, args=(execution_time ,)) #Multiprocessing to approx real-time control the extrusion and visual effect
+        job = Process(target=time_bar, args=(execution_time ,), name='LoadBar') #Multiprocessing to approx real-time control the extrusion and visual effect
         job.start()
         for i in range(0, way_parts):
             print "executing trajectory %d on %d" % (i + 1, way_parts)
